@@ -70,6 +70,13 @@ type geminiRateLimitState struct {
 // waiting, beforeSend returns the context error immediately.
 func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(hitLimit bool), err error) {
 	s.mu.Lock()
+	now := time.Now()
+	if s.windowStart.IsZero() || now.Sub(s.windowStart) >= geminiThrottleWindow {
+		// First request ever, or the previous 5m5s window has fully elapsed:
+		// record this request's timestamp as the anchor for the current quota window.
+		s.windowStart = now
+		s.throttled = false
+	}
 	throttled := s.throttled
 	windowStart := s.windowStart
 	s.mu.Unlock()
@@ -84,13 +91,13 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(hit
 		}
 
 		s.mu.Lock()
-		if time.Since(windowStart) >= geminiThrottleWindow {
+		nowAfterSleep := time.Now()
+		if nowAfterSleep.Sub(s.windowStart) >= geminiThrottleWindow {
 			s.throttled = false
+			s.windowStart = nowAfterSleep
 		}
 		s.mu.Unlock()
 	}
-
-	sendTime := time.Now()
 
 	// Only one Gemini native request is ever in flight at a time for this
 	// channel during recovery, ensuring queued requests are sent and verified sequentially.
@@ -108,7 +115,6 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(hit
 		released = true
 		if hitLimit {
 			s.mu.Lock()
-			s.windowStart = sendTime
 			s.throttled = true
 			s.mu.Unlock()
 		}
