@@ -23,6 +23,9 @@ func init() {
 
 type GeminiChannel struct {
 	*BaseChannel
+	rateLimit    *geminiRateLimitState
+	httpClient   *http.Client
+	streamClient *http.Client
 }
 
 func newGeminiChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
@@ -31,9 +34,29 @@ func newGeminiChannel(f *Factory, group *models.Group) (ChannelProxy, error) {
 		return nil, err
 	}
 
-	return &GeminiChannel{
+	state := &geminiRateLimitState{}
+	ch := &GeminiChannel{
 		BaseChannel: base,
-	}, nil
+		rateLimit:   state,
+	}
+	ch.httpClient = wrapWithGeminiThrottle(base.HTTPClient, state)
+	ch.streamClient = wrapWithGeminiThrottle(base.StreamClient, state)
+
+	return ch, nil
+}
+
+// GetHTTPClient overrides BaseChannel's client with one that enforces the
+// Gemini native-endpoint (/v1beta/models/*) resource-exhausted throttling
+// guard. The OpenAI-compatible surface (/v1beta/openai/...) passes through
+// untouched.
+func (ch *GeminiChannel) GetHTTPClient() *http.Client {
+	return ch.httpClient
+}
+
+// GetStreamClient overrides BaseChannel's client with one that enforces the
+// same throttling guard as GetHTTPClient, for streaming requests.
+func (ch *GeminiChannel) GetStreamClient() *http.Client {
+	return ch.streamClient
 }
 
 // ModifyRequest adds the API key as a query parameter for Gemini requests.
