@@ -1,0 +1,30 @@
+# fly.toml app configuration file generated for gpt-load-fly on 2026-05-16T17:08:54+03:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'gpt-load-fly'
+primary_region = 'lhr'
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DB_DSN = '/app/data/gpt-load.db'
+
+[[mounts]]
+  source = 'gpt_storage'
+  destination = '/app/data'
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256

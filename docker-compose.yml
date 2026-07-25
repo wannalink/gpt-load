@@ -1,9 +1,9 @@
 services:
   gpt-load:
-    image: ghcr.io/tbphp/gpt-load:latest
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # image: ghcr.io/tbphp/gpt-load:latest
     container_name: gpt-load
     ports:
       - "${PORT:-3001}:${PORT:-3001}"
