@@ -2,6 +2,7 @@ package channel
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"regexp"
