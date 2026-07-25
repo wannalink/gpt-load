@@ -31,17 +31,14 @@ func isGeminiThrottledPath(path string) bool {
 	return geminiNativeModelsPathPattern.MatchString(path)
 }
 
-// isResourceExhaustedResponse detects Gemini's quota/rate-limit error shape:
-// HTTP 429 with a body such as "Resource has been exhausted (e.g. check
-// quota)."
+// isResourceExhaustedResponse detects Gemini's exact resource exhaustion
+// error: HTTP 429 with the specific body containing
+// "Resource has been exhausted (e.g. check quota)."
 func isResourceExhaustedResponse(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests {
 		return false
 	}
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "resource has been exhausted") ||
-		strings.Contains(lower, "resource_exhausted") ||
-		strings.Contains(lower, "check quota")
+	return strings.Contains(strings.ToLower(string(body)), "resource has been exhausted (e.g. check quota).")
 }
 
 // geminiRateLimitState tracks the sliding throttling window for a single
@@ -68,8 +65,9 @@ type geminiRateLimitState struct {
 // matches isGeminiThrottledPath. It blocks the caller while the current
 // window is throttled, resets the window once it has fully elapsed, and
 // returns a release function that must be invoked with the outcome of the
-// request once it completes.
-func (s *geminiRateLimitState) beforeSend() (release func(hitLimit bool)) {
+// request once it completes. If the request context is canceled while
+// waiting, beforeSend returns the context error immediately.
+func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(hitLimit bool), err error) {
 	s.mu.Lock()
 	throttled := s.throttled
 	windowStart := s.windowStart
@@ -77,7 +75,11 @@ func (s *geminiRateLimitState) beforeSend() (release func(hitLimit bool)) {
 
 	if throttled {
 		if d := time.Until(windowStart.Add(geminiThrottleWindow)); d > 0 {
-			time.Sleep(d)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(d):
+			}
 		}
 
 		s.mu.Lock()
@@ -90,8 +92,12 @@ func (s *geminiRateLimitState) beforeSend() (release func(hitLimit bool)) {
 	sendTime := time.Now()
 
 	// Only one Gemini native request is ever in flight at a time for this
-	// channel, ensuring queued requests are sent and verified sequentially.
+	// channel during recovery, ensuring queued requests are sent and verified sequentially.
 	s.sendMu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.sendMu.Unlock()
+		return nil, err
+	}
 
 	var released bool
 	release = func(hitLimit bool) {
@@ -101,19 +107,13 @@ func (s *geminiRateLimitState) beforeSend() (release func(hitLimit bool)) {
 		released = true
 		if hitLimit {
 			s.mu.Lock()
-			// Only set or update windowStart if we were not already throttled
-			// or if this 429 occurred after the previous window had fully elapsed.
-			// This prevents binding windowStart to intermediate 429 errors
-			// that occur within an existing throttling window.
-			if !s.throttled || s.windowStart.IsZero() || sendTime.Sub(s.windowStart) >= geminiThrottleWindow {
-				s.windowStart = sendTime
-				s.throttled = true
-			}
+			s.windowStart = sendTime
+			s.throttled = true
 			s.mu.Unlock()
 		}
 		s.sendMu.Unlock()
 	}
-	return release
+	return release, nil
 }
 
 // geminiThrottleTransport wraps an http.RoundTripper and applies the Gemini
@@ -128,11 +128,14 @@ func (t *geminiThrottleTransport) RoundTrip(req *http.Request) (*http.Response, 
 		return t.base.RoundTrip(req)
 	}
 
-	release := t.state.beforeSend()
+	release, err := t.state.beforeSend(req.Context())
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
-		// Network-level failures are not quota signals.
+		// Network-level or context failures are not quota signals.
 		release(false)
 		return resp, err
 	}
