@@ -19,7 +19,7 @@ var geminiNativeModelsPathPattern = regexp.MustCompile(`/v1beta/models/`)
 
 // geminiThrottleWindow is the sliding window used to group requests that
 // count toward a single Gemini rate-limit episode.
-const geminiThrottleWindow = 5 * time.Minute
+const geminiThrottleWindow = 5*time.Minute + 5*time.Second
 
 // isGeminiThrottledPath reports whether the request path belongs to the
 // native Gemini generateContent surface and should be subject to the
@@ -71,13 +71,6 @@ type geminiRateLimitState struct {
 // request once it completes.
 func (s *geminiRateLimitState) beforeSend() (release func(hitLimit bool)) {
 	s.mu.Lock()
-	now := time.Now()
-	if s.windowStart.IsZero() || now.Sub(s.windowStart) >= geminiThrottleWindow {
-		// First request ever, or the previous window has fully elapsed:
-		// this request becomes the new starting point for the window.
-		s.windowStart = now
-		s.throttled = false
-	}
 	throttled := s.throttled
 	windowStart := s.windowStart
 	s.mu.Unlock()
@@ -87,13 +80,14 @@ func (s *geminiRateLimitState) beforeSend() (release func(hitLimit bool)) {
 			time.Sleep(d)
 		}
 
-		// The wait has pushed us past the original window boundary; this
-		// request starts a brand-new window.
 		s.mu.Lock()
-		s.windowStart = time.Now()
-		s.throttled = false
+		if time.Since(windowStart) >= geminiThrottleWindow {
+			s.throttled = false
+		}
 		s.mu.Unlock()
 	}
+
+	sendTime := time.Now()
 
 	// Only one Gemini native request is ever in flight at a time for this
 	// channel, ensuring queued requests are sent and verified sequentially.
@@ -107,7 +101,14 @@ func (s *geminiRateLimitState) beforeSend() (release func(hitLimit bool)) {
 		released = true
 		if hitLimit {
 			s.mu.Lock()
-			s.throttled = true
+			// Only set or update windowStart if we were not already throttled
+			// or if this 429 occurred after the previous window had fully elapsed.
+			// This prevents binding windowStart to intermediate 429 errors
+			// that occur within an existing throttling window.
+			if !s.throttled || s.windowStart.IsZero() || sendTime.Sub(s.windowStart) >= geminiThrottleWindow {
+				s.windowStart = sendTime
+				s.throttled = true
+			}
 			s.mu.Unlock()
 		}
 		s.sendMu.Unlock()
