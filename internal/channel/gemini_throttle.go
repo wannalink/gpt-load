@@ -19,35 +19,21 @@ import (
 var geminiNativeModelsPathPattern = regexp.MustCompile(`/v1beta/models/`)
 
 // geminiThrottleWindow is the sliding window used to group requests that
-// count toward a single Gemini rate-limit episode per model.
+// count toward a single Gemini rate-limit episode across native API endpoints.
 const geminiThrottleWindow = 5*time.Minute + 5*time.Second
 
 // geminiProactiveLimit is the maximum number of requests (with status code < 500)
-// allowed within a single 5-minute sliding window for a model before proactive throttling occurs.
+// allowed within a single 5-minute sliding window before proactive throttling occurs.
 const geminiProactiveLimit = 20
 
 // isGeminiThrottledPath reports whether the request path belongs to the
 // native Gemini generateContent surface and should be subject to the
-// per-model throttling guard.
+// channel-wide throttling guard.
 func isGeminiThrottledPath(path string) bool {
 	if strings.Contains(path, "/v1beta/openai") {
 		return false
 	}
 	return geminiNativeModelsPathPattern.MatchString(path)
-}
-
-// extractGeminiModelFromPath extracts the model name from a Gemini native endpoint URL path.
-// For example, "/proxy/gemini-pool/v1beta/models/gemini-flash-latest:streamGenerateContent"
-// returns "gemini-flash-latest".
-func extractGeminiModelFromPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part == "models" && i+1 < len(parts) {
-			modelPart := parts[i+1]
-			return strings.Split(modelPart, ":")[0]
-		}
-	}
-	return ""
 }
 
 // isResourceExhaustedResponse detects Gemini's exact resource exhaustion
@@ -60,57 +46,32 @@ func isResourceExhaustedResponse(statusCode int, body []byte) bool {
 	return strings.Contains(strings.ToLower(string(body)), "resource has been exhausted (e.g. check quota).")
 }
 
-// modelRateLimitState tracks the rate limiting window and request count for a specific model.
-type modelRateLimitState struct {
+// geminiRateLimitState tracks the sliding rate-limiting window and request count for a single Gemini channel instance.
+type geminiRateLimitState struct {
 	mu           sync.Mutex
 	windowStart  time.Time
 	requestCount int
 	throttled    bool
 
-	// sendMu serializes upstream sends for this specific model during recovery/throttled states.
+	// sendMu serializes upstream sends during recovery/throttled states.
 	sendMu sync.Mutex
 }
 
-// geminiRateLimitState holds per-model rate limit states for a Gemini channel instance.
-type geminiRateLimitState struct {
-	mu     sync.Mutex
-	models map[string]*modelRateLimitState
-}
-
-// getModelState returns (or initializes) the modelRateLimitState for a given model.
-func (s *geminiRateLimitState) getModelState(modelName string) *modelRateLimitState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.models == nil {
-		s.models = make(map[string]*modelRateLimitState)
-	}
-
-	ms, ok := s.models[modelName]
-	if !ok {
-		ms = &modelRateLimitState{}
-		s.models[modelName] = ms
-	}
-	return ms
-}
-
-// beforeSend must be called immediately before dispatching a request for modelName.
+// beforeSend must be called immediately before dispatching a request on a native Gemini endpoint.
 // It checks proactive and reactive limits, pauses if necessary until the window elapses,
-// and returns a release function that updates the model's rate limit state based on the HTTP status code.
-func (s *geminiRateLimitState) beforeSend(ctx context.Context, modelName string) (release func(statusCode int, hitExhaustion429 bool), err error) {
-	ms := s.getModelState(modelName)
-
-	ms.mu.Lock()
+// and returns a release function that updates the rate limit state based on the HTTP status code.
+func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(statusCode int, hitExhaustion429 bool), err error) {
+	s.mu.Lock()
 	now := time.Now()
-	if ms.windowStart.IsZero() || now.Sub(ms.windowStart) >= geminiThrottleWindow {
-		// First request ever or previous window elapsed: start fresh window for this model
-		ms.windowStart = now
-		ms.requestCount = 0
-		ms.throttled = false
+	if s.windowStart.IsZero() || now.Sub(s.windowStart) >= geminiThrottleWindow {
+		// First request ever or previous 5m5s window elapsed: start fresh window
+		s.windowStart = now
+		s.requestCount = 0
+		s.throttled = false
 	}
-	isThrottled := ms.throttled || ms.requestCount >= geminiProactiveLimit
-	windowStart := ms.windowStart
-	ms.mu.Unlock()
+	isThrottled := s.throttled || s.requestCount >= geminiProactiveLimit
+	windowStart := s.windowStart
+	s.mu.Unlock()
 
 	if isThrottled {
 		if d := time.Until(windowStart.Add(geminiThrottleWindow)); d > 0 {
@@ -121,19 +82,19 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context, modelName string)
 			}
 		}
 
-		ms.mu.Lock()
+		s.mu.Lock()
 		nowAfterSleep := time.Now()
-		if nowAfterSleep.Sub(ms.windowStart) >= geminiThrottleWindow {
-			ms.throttled = false
-			ms.requestCount = 0
-			ms.windowStart = nowAfterSleep
+		if nowAfterSleep.Sub(s.windowStart) >= geminiThrottleWindow {
+			s.throttled = false
+			s.requestCount = 0
+			s.windowStart = nowAfterSleep
 		}
-		ms.mu.Unlock()
+		s.mu.Unlock()
 	}
 
-	ms.sendMu.Lock()
+	s.sendMu.Lock()
 	if err := ctx.Err(); err != nil {
-		ms.sendMu.Unlock()
+		s.sendMu.Unlock()
 		return nil, err
 	}
 
@@ -143,29 +104,29 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context, modelName string)
 			return
 		}
 		released = true
-		defer ms.sendMu.Unlock()
+		defer s.sendMu.Unlock()
 
-		ms.mu.Lock()
-		defer ms.mu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
 		if hitExhaustion429 {
 			// Reactive safety net triggered
-			ms.throttled = true
+			s.throttled = true
 			return
 		}
 
 		// Proactive counting for response codes < 500
 		if statusCode > 0 && statusCode < 500 {
-			ms.requestCount++
-			if ms.requestCount >= geminiProactiveLimit {
-				ms.throttled = true
+			s.requestCount++
+			if s.requestCount >= geminiProactiveLimit {
+				s.throttled = true
 			}
 		}
 	}
 	return release, nil
 }
 
-// geminiThrottleTransport wraps an http.RoundTripper and applies the per-model throttling guard.
+// geminiThrottleTransport wraps an http.RoundTripper and applies the channel-wide throttling guard.
 type geminiThrottleTransport struct {
 	base  http.RoundTripper
 	state *geminiRateLimitState
@@ -176,12 +137,7 @@ func (t *geminiThrottleTransport) RoundTrip(req *http.Request) (*http.Response, 
 		return t.base.RoundTrip(req)
 	}
 
-	modelName := extractGeminiModelFromPath(req.URL.Path)
-	if modelName == "" {
-		modelName = "_default_"
-	}
-
-	release, err := t.state.beforeSend(req.Context(), modelName)
+	release, err := t.state.beforeSend(req.Context())
 	if err != nil {
 		return nil, err
 	}
