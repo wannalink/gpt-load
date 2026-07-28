@@ -59,12 +59,12 @@ type geminiRateLimitState struct {
 
 // beforeSend must be called immediately before dispatching a request on a native Gemini endpoint.
 // It checks proactive and reactive limits, pauses if necessary until the window elapses,
-// and returns a release function that updates the rate limit state based on the HTTP status code.
+// increments the proactive dispatch count, and returns a release function to update state on response completion.
 func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(statusCode int, hitExhaustion429 bool), err error) {
 	s.mu.Lock()
 	now := time.Now()
 	if s.windowStart.IsZero() || now.Sub(s.windowStart) >= geminiThrottleWindow {
-		// First request ever or previous 5m5s window elapsed: start fresh window
+		// First request ever or previous 5m5s window fully elapsed: start fresh window
 		s.windowStart = now
 		s.requestCount = 0
 		s.throttled = false
@@ -87,16 +87,25 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 		if nowAfterSleep.Sub(s.windowStart) >= geminiThrottleWindow {
 			s.throttled = false
 			s.requestCount = 0
-			s.windowStart = nowAfterSleep
 		}
 		s.mu.Unlock()
 	}
 
+	// Serialize upstream sends during recovery/throttling state
 	s.sendMu.Lock()
 	if err := ctx.Err(); err != nil {
 		s.sendMu.Unlock()
 		return nil, err
 	}
+
+	sendTime := time.Now()
+
+	s.mu.Lock()
+	s.requestCount++
+	if s.requestCount >= geminiProactiveLimit {
+		s.throttled = true
+	}
+	s.mu.Unlock()
 
 	var released bool
 	release = func(statusCode int, hitExhaustion429 bool) {
@@ -115,11 +124,24 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 			return
 		}
 
-		// Proactive counting for response codes < 500
-		if statusCode > 0 && statusCode < 500 {
-			s.requestCount++
-			if s.requestCount >= geminiProactiveLimit {
-				s.throttled = true
+		if statusCode >= 200 && statusCode < 400 {
+			// Verified successful response
+			if sendTime.Sub(s.windowStart) >= geminiThrottleWindow {
+				// Successfully recovered after window expired: anchor the new 5m window
+				s.windowStart = sendTime
+				s.requestCount = 1
+				s.throttled = false
+			}
+			return
+		}
+
+		if statusCode == 0 || statusCode >= 500 {
+			// Network errors or 5xx server errors do not consume proactive quota limits
+			if s.requestCount > 0 {
+				s.requestCount--
+				if s.requestCount < geminiProactiveLimit && !hitExhaustion429 {
+					s.throttled = false
+				}
 			}
 		}
 	}
