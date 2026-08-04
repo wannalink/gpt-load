@@ -22,7 +22,7 @@ var geminiNativeModelsPathPattern = regexp.MustCompile(`/v1beta/models/`)
 // count toward a single Gemini rate-limit episode across native API endpoints.
 const geminiThrottleWindow = 5*time.Minute + 5*time.Second
 
-// geminiProactiveLimit is the maximum number of requests (with status code < 500)
+// geminiProactiveLimit is the maximum number of requests (reaching Google API)
 // allowed within a single 5-minute sliding window before proactive throttling occurs.
 const geminiProactiveLimit = 20
 
@@ -118,31 +118,29 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		if hitExhaustion429 {
-			// Reactive safety net triggered
-			s.throttled = true
-			return
-		}
-
-		if statusCode >= 200 && statusCode < 400 {
-			// Verified successful response
-			if sendTime.Sub(s.windowStart) >= geminiThrottleWindow {
-				// Successfully recovered after window expired: anchor the new 5m window
-				s.windowStart = sendTime
-				s.requestCount = 1
-				s.throttled = false
-			}
-			return
-		}
-
-		if statusCode == 0 || statusCode >= 500 {
-			// Network errors or 5xx server errors do not consume proactive quota limits
+		if statusCode == 0 {
+			// Network error (Google API was NOT reached at all):
+			// revert the requestCount increment.
 			if s.requestCount > 0 {
 				s.requestCount--
 				if s.requestCount < geminiProactiveLimit && !hitExhaustion429 {
 					s.throttled = false
 				}
 			}
+			return
+		}
+
+		// Google API WAS reached (statusCode > 0, e.g. 200, 400, 429, 500, etc.).
+		// Any request reaching Google API starts the 5m window if the timer is not currently running.
+		if sendTime.Sub(s.windowStart) >= geminiThrottleWindow {
+			s.windowStart = sendTime
+			s.requestCount = 1
+			s.throttled = false
+		}
+
+		if hitExhaustion429 {
+			// Reactive safety net triggered
+			s.throttled = true
 		}
 	}
 	return release, nil
@@ -166,7 +164,7 @@ func (t *geminiThrottleTransport) RoundTrip(req *http.Request) (*http.Response, 
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
-		// Network-level or context failures do not count toward quota limits.
+		// Network-level or context failures do not reach Google API.
 		release(0, false)
 		return resp, err
 	}
