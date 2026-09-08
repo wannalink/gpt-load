@@ -180,7 +180,9 @@ func BuildContainer() (*dig.Container, error) {
 		subscription.NewCredentialManager,
 		cpaexecutor.NewAdapter,
 		newProviderAdapterRegistry,
-		func(registry *provideradapter.Registry) execution.Executor { return registry },
+		func(registry *provideradapter.Registry) execution.Executor {
+			return execution.NewGeminiThrottledExecutor(registry)
+		},
 		func(runtime *bifrostexecutor.RuntimeManager) app.ExecutionRuntime { return runtime },
 		gateway.NewExecutionForwarder,
 		func(forwarder *gateway.ExecutionForwarder) gateway.AttemptForwarder { return forwarder },
