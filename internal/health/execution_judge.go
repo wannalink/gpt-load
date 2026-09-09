@@ -306,7 +306,7 @@ func classifyExecutionEvidence(attempt ExecutionAttempt) FailureCategory {
 
 	switch {
 	case statusCode == http.StatusTooManyRequests || containsAny(markers,
-		"rate_limit", "rate limit", "too_many_requests", "quota_exceeded",
+		"rate_limit", "rate limit", "too_many_requests", "quota_exceeded", "quota exceeded",
 		"resource_exhausted", "throttl"):
 		return FailureCategoryRateLimited
 	case statusCode == http.StatusUnauthorized:
@@ -335,6 +335,9 @@ func decisionForExecutionCategory(
 	attempt ExecutionAttempt,
 	decisionContext DecisionContext,
 ) Decision {
+	if geminiDecision, ok := geminiFreeTierQuotaDecision(attempt); ok {
+		return geminiDecision
+	}
 	if transientCapacity, ok := transientCapacityDecision(attempt); ok {
 		return transientCapacity
 	}
