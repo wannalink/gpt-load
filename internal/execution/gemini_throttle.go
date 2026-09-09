@@ -27,48 +27,22 @@ func isGeminiThrottledTarget(spec AttemptSpec) bool {
 	return channelID == "gemini"
 }
 
-// isResourceExhausted detects whether an attempt failed due to Gemini rate limiting or quota exhaustion:
-// HTTP 429 Too Many Requests, FailureHintRateLimited, or error body/summary containing exhaustion markers.
+// isResourceExhausted detects Gemini's exact resource exhaustion response: HTTP 429 with
+// the specific message "Resource has been exhausted (e.g. check quota)." in body or error summary.
 func isResourceExhausted(statusCode int, body []byte, evidence *ErrorEvidence) bool {
-	if statusCode == http.StatusTooManyRequests {
+	is429 := statusCode == http.StatusTooManyRequests ||
+		(evidence != nil && evidence.StatusCode == http.StatusTooManyRequests)
+	if !is429 {
+		return false
+	}
+
+	const marker = "resource has been exhausted (e.g. check quota)."
+
+	if len(body) > 0 && strings.Contains(strings.ToLower(string(body)), marker) {
 		return true
 	}
-	if evidence != nil {
-		if evidence.StatusCode == http.StatusTooManyRequests || evidence.Hint == FailureHintRateLimited {
-			return true
-		}
-		summary := strings.ToLower(evidence.Summary)
-		code := strings.ToLower(evidence.Code)
-		typeVal := strings.ToLower(evidence.Type)
-		for _, marker := range []string{
-			"resource_exhausted",
-			"resource has been exhausted",
-			"quota_exceeded",
-			"quota exceeded",
-			"rate_limit",
-			"rate limit",
-			"too_many_requests",
-			"429",
-		} {
-			if strings.Contains(summary, marker) || strings.Contains(code, marker) || strings.Contains(typeVal, marker) {
-				return true
-			}
-		}
-	}
-	if len(body) > 0 {
-		lowerBody := strings.ToLower(string(body))
-		for _, marker := range []string{
-			"resource_exhausted",
-			"resource has been exhausted",
-			"quota_exceeded",
-			"quota exceeded",
-			"rate_limit",
-			"rate limit",
-		} {
-			if strings.Contains(lowerBody, marker) {
-				return true
-			}
-		}
+	if evidence != nil && strings.Contains(strings.ToLower(evidence.Summary), marker) {
+		return true
 	}
 	return false
 }

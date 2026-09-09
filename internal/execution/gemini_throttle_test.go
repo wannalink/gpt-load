@@ -65,38 +65,39 @@ func TestIsResourceExhausted(t *testing.T) {
 		expected   bool
 	}{
 		{
-			name:       "exact 429 status",
+			name:       "exact 429 with matching body",
 			statusCode: http.StatusTooManyRequests,
-			expected:   true,
-		},
-		{
-			name:       "429 in evidence status code",
-			statusCode: 0,
-			evidence:   &ErrorEvidence{StatusCode: http.StatusTooManyRequests},
-			expected:   true,
-		},
-		{
-			name:       "rate limit hint in evidence",
-			statusCode: 0,
-			evidence:   &ErrorEvidence{Hint: FailureHintRateLimited},
-			expected:   true,
-		},
-		{
-			name:       "quota exceeded in error summary",
-			statusCode: 0,
-			evidence:   &ErrorEvidence{Summary: "upstream quota exceeded for project"},
-			expected:   true,
-		},
-		{
-			name:       "resource exhausted in body",
-			statusCode: 0,
 			body:       []byte(`{"error":{"message":"Resource has been exhausted (e.g. check quota)."}}`),
 			expected:   true,
 		},
 		{
-			name:       "200 ok without exhaustion",
+			name:       "exact 429 with matching error summary",
+			statusCode: 0,
+			evidence: &ErrorEvidence{
+				StatusCode: http.StatusTooManyRequests,
+				Summary:    "upstream error: Resource has been exhausted (e.g. check quota).",
+			},
+			expected: true,
+		},
+		{
+			name:       "429 other rate limit message is ignored",
+			statusCode: http.StatusTooManyRequests,
+			body:       []byte(`{"error":{"message":"rate limit exceeded"}}`),
+			expected:   false,
+		},
+		{
+			name:       "429 without matching summary is ignored",
+			statusCode: 0,
+			evidence: &ErrorEvidence{
+				StatusCode: http.StatusTooManyRequests,
+				Summary:    "upstream rate limit exceeded",
+			},
+			expected: false,
+		},
+		{
+			name:       "200 ok with body is ignored",
 			statusCode: http.StatusOK,
-			body:       []byte(`{"candidates":[]}`),
+			body:       []byte(`Resource has been exhausted (e.g. check quota).`),
 			expected:   false,
 		},
 	}
