@@ -49,10 +49,10 @@ func (forwarder *ExecutionForwarder) Forward(
 	result := upstreamFromExecutionResult(ctx, input, executionResult)
 	result = forwarder.prepareBufferedResult(input, result)
 	if (input.ClientProtocol == protocol.OpenAIImages ||
-		input.ClientProtocol == protocol.OpenAIEmbeddings) && input.ObserveUsage &&
+		input.ClientProtocol == protocol.OpenAIEmbeddings || input.ClientProtocol == protocol.Rerank) && input.ObserveUsage &&
 		result.HasResponse() && result.StatusCode >= http.StatusOK &&
 		result.StatusCode < http.StatusMultipleChoices &&
-		result.Usage.State == usage.StateMissing && forwarder.usageCapture != nil {
+		executionResult.Usage == nil && result.Usage.State == usage.StateMissing && forwarder.usageCapture != nil {
 		result.Usage = forwarder.usageCapture.extractNonStreamingPlain(
 			input.Dialect,
 			result.ClassificationBody,
@@ -755,7 +755,7 @@ func newExecutionAttemptSpec(input ForwardInput) (execution.AttemptSpec, error) 
 			return execution.AttemptSpec{}, err
 		}
 		spec.Body = body
-		platformheader.StripRequestRepresentationMetadata(spec.Header)
+		platformheader.StripRepresentationMetadata(spec.Header)
 	}
 	if err := spec.Validate(); err != nil {
 		return execution.AttemptSpec{}, err

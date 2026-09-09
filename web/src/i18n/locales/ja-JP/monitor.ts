@@ -389,7 +389,7 @@ export default {
       title: 'ルート検査',
       description: 'プロトコル、モデル、アクセスキーから候補グループと認証情報を確認します。',
       boundary:
-        '会話内容やアフィニティヒットを含まない標準的なステートレスリクエストを模擬します。Responses は store:false を使用し、Images は画像生成のみ、Embeddings は埋め込み作成のみを確認します。読み取り専用で、上流送信や Token 消費はありません。',
+        '会話内容やアフィニティヒットを含まない標準的なステートレスリクエストを模擬します。Responses は store:false を使用し、Images は画像生成のみ、Embeddings は埋め込み作成のみ、Rerank はテキストの再ランキングを確認します。読み取り専用で、上流送信や Token 消費はありません。',
       routeModes: {
         native: 'ネイティブ',
         converted: 'プロトコル変換',
@@ -408,6 +408,7 @@ export default {
         images_generate: '画像を生成',
         images_edit: '画像を編集',
         embeddings_create: '埋め込みを作成',
+        rerank: 'ドキュメントを再ランキング',
       },
       routeRequirements: {
         any: 'プロトコル変換を許可（損失の可能性あり）',
@@ -564,7 +565,7 @@ export default {
         group_weight_zero: 'グループの有効ウェイトがゼロです',
         credential_disabled: '認証情報は無効です',
         credential_blacklisted: '認証情報はブラックリストに登録されています',
-        model_cooldown: 'この認証情報の対象モデルはクールダウン中です',
+        model_cooldown: 'モデル冷却中',
         credential_cooldown: '認証情報はクールダウン中です',
         credential_auth_unavailable: 'サブスクリプション認証を現在利用できません',
         credential_weight_zero: '認証情報の有効ウェイトがゼロです',
@@ -600,6 +601,15 @@ export default {
         from: '開始時刻',
         to: '終了時刻',
         quickRanges: 'クイック時間範囲',
+        quickDisplay: {
+          '1h': '過去 1 時間',
+          '6h': '過去 6 時間',
+          '24h': '過去 24 時間',
+          '3d': '過去 3 日',
+          '7d': '過去 7 日',
+          '15d': '過去 15 日',
+          '30d': '過去 30 日',
+        },
         quick: {
           today: '今日',
           yesterday: '昨日',
@@ -664,13 +674,15 @@ export default {
         lastRefreshed: '最終成功更新',
         remove: 'フィルター {value} を削除',
         advancedTitle: 'その他のフィルター',
-        advancedDescription: 'リクエスト、再試行、最終結果、数値範囲で絞り込みます。',
+        advancedDescription:
+          'リクエスト、アップストリームの試行、応答時間、トークン、コストで絞り込みます。',
         closeAdvanced: 'その他のフィルターを閉じる',
         sections: {
-          request: 'リクエスト',
-          attempt: '再試行',
-          result: '最終結果',
-          ranges: '数値範囲',
+          request: 'リクエストとレスポンス',
+          attempt: 'アップストリームの試行と再試行',
+          timing: '応答時間',
+          usage: 'トークンとキャッシュ',
+          cost: 'コストと料金計算',
         },
         retryState: { retried: '再試行あり', not_retried: '再試行なし' },
         usageState: {
@@ -799,6 +811,7 @@ export default {
         images_generate: '画像を生成',
         images_edit: '画像を編集',
         embeddings_create: '埋め込みを作成',
+        rerank: 'ドキュメントを再ランキング',
         list_models: 'モデル一覧',
         probe: 'ヘルスプローブ',
       },

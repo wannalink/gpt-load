@@ -13,6 +13,7 @@ import (
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/execution/geminiimage"
 	"gpt-load/internal/execution/responsealias"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/subscription/providers/antigravity"
@@ -47,6 +48,9 @@ func (*antigravityProviderBridge) ValidateRouteCapability(route channel.RouteDes
 	if route.ClientProtocol == protocol.OpenAICompletions {
 		valid = route.Operation == execution.OperationChatCompletion && route.RouteMode == execution.RouteConverted
 	}
+	if route.ClientProtocol == protocol.OpenAIImages {
+		valid = route.Operation == execution.OperationImagesGenerate && route.RouteMode == execution.RouteConverted
+	}
 	if route.ClientProtocol == protocol.OpenAIResponses {
 		valid = (route.Operation == execution.OperationResponsesCreate || route.Operation == execution.OperationResponsesInputTokens) &&
 			route.RouteMode == execution.RouteConverted
@@ -69,6 +73,12 @@ func (*antigravityProviderBridge) ParseCredential(raw []byte) (providerCredentia
 // for Antigravity. General protocol validation stays with the existing
 // dialect layer so this does not become a second request schema.
 func (*antigravityProviderBridge) ValidateRequest(request providerRequest) error {
+	if strings.TrimSpace(request.Format) == "openai-image" {
+		if request.RequestPath != "/v1/images/generations" {
+			return errors.New("Antigravity only supports image generations")
+		}
+		return geminiimage.ValidateRequest(request.Payload)
+	}
 	if strings.TrimSpace(request.Format) == "openai-response" &&
 		strings.Contains(strings.ToLower(strings.TrimSpace(request.Model)), "image") {
 		return errors.New("Antigravity does not support Responses image output")
@@ -155,6 +165,14 @@ func (bridge *antigravityProviderBridge) Execute(
 	if !ok || bridge == nil || bridge.executor == nil {
 		return providerResponse{}, errors.New("Antigravity provider bridge credential mismatch")
 	}
+	images := strings.TrimSpace(request.Format) == "openai-image"
+	if images {
+		payload, err := geminiimage.ConvertRequest(request.Payload)
+		if err != nil {
+			return providerResponse{}, err
+		}
+		request.Format, request.Payload, request.OriginalRequest = "gemini", payload, bytes.Clone(payload)
+	}
 	response, err := bridge.executor.Execute(ctx, credentialID, value.value, antigravity.ExecuteRequest{
 		AttemptID: request.AttemptID, Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		Headers: request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
@@ -164,9 +182,13 @@ func (bridge *antigravityProviderBridge) Execute(
 	if err == nil {
 		response.Payload, err = normalizeAntigravityResponseModel(request.Format, response.Payload, request.Model)
 	}
+	var imageUsage *execution.UsageEvidence
+	if err == nil && images {
+		response.Payload, imageUsage, err = geminiimage.ConvertResponse(response.Payload)
+	}
 	return providerResponse{
 		Payload: append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
-		AppliedReasoningEffort: response.AppliedReasoningEffort,
+		AppliedReasoningEffort: response.AppliedReasoningEffort, Usage: imageUsage,
 	}, err
 }
 
@@ -310,6 +332,14 @@ func (*antigravityProviderBridge) ClassifyError(
 ) (int, *execution.ErrorEvidence) {
 	if err == nil {
 		return 0, nil
+	}
+	if errors.Is(err, geminiimage.ErrInvalidResponse) {
+		return http.StatusBadGateway, &execution.ErrorEvidence{
+			Kind: execution.ErrorKindProvider, StatusCode: http.StatusBadGateway,
+			Hint: execution.FailureHintRequestRejected, OriginHint: execution.ErrorOriginUpstream,
+			ScopeHint: execution.ErrorScopeRequest, Code: "invalid_image_response",
+			Summary: geminiimage.ErrInvalidResponse.Error(), ReplaySafety: execution.ReplaySafetyUnknown,
+		}
 	}
 	status := 0
 	var statusError interface{ StatusCode() int }

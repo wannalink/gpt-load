@@ -21,6 +21,7 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/execution/geminiimage"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
 )
@@ -67,6 +68,7 @@ func (r *Runtime) Execute(parent context.Context, spec execution.AttemptSpec) (r
 	defer func() {
 		normalizeImagesAttemptResult(spec, &result)
 		normalizeEmbeddingsAttemptResult(spec, &result)
+		normalizeRerankAttemptResult(spec, &result)
 	}()
 	prepared, preflightError := r.prepare(spec, false)
 	if preflightError != nil {
@@ -91,7 +93,7 @@ func (r *Runtime) Execute(parent context.Context, spec execution.AttemptSpec) (r
 		return r.executeEmbedding(parent, spec, prepared)
 	}
 	if prepared.passthrough != nil {
-		return r.executeNative(parent, spec, prepared)
+		return r.executePassthrough(parent, spec, prepared)
 	}
 	if prepared.countTokensRequest != nil {
 		return r.executeCountTokens(parent, spec, prepared)
@@ -467,7 +469,8 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 			safeQuery = removeRawQueryValue(safeQuery, "$alt")
 		}
 	}
-	if mode == channel.RouteNative && spec.ClientProtocol == protocol.Gemini &&
+	convertedImages := mode == channel.RouteConverted && spec.ClientProtocol == protocol.OpenAIImages && providerKind == channel.ProviderGemini
+	if convertedImages || mode == channel.RouteNative && spec.ClientProtocol == protocol.Gemini &&
 		(providerKind == channel.ProviderGemini || providerKind == channel.ProviderGoogleVertex ||
 			providerKind == channel.ProviderMultiProtocolGateway) {
 		safeQuery = removeRawQueryValue(safeQuery, "alt")
@@ -488,6 +491,9 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 	}
 	if providerKind == channel.ProviderDeepSeek && spec.ClientProtocol == protocol.Anthropic {
 		directKey.UseAnthropicEndpoints = schemas.Ptr(true)
+	}
+	if spec.ClientProtocol == protocol.Rerank {
+		return prepareRerank(spec, resolved, provider, directKey, secrets)
 	}
 	if spec.Operation == execution.OperationProbe {
 		if spec.ClientProtocol == protocol.OpenAIEmbeddings {
@@ -596,7 +602,7 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 			clientProtocol: spec.ClientProtocol, directKey: directKey, secrets: secrets,
 		}, nil
 	}
-	if mode == channel.RouteNative && providerSupportsPassthrough(providerKind, customTargetBaseURL, spec.ClientProtocol) {
+	if convertedImages || mode == channel.RouteNative && providerSupportsPassthrough(providerKind, customTargetBaseURL, spec.ClientProtocol) {
 		body, sanitizedHeaders, err := sanitizeNativePassthroughRequest(spec, stream)
 		if err != nil {
 			failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid native request body")
@@ -607,7 +613,23 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 			}
 			return preparedAttempt{}, &failure
 		}
-		passthroughPath, err := nativePassthroughPath(spec, providerKind)
+		passthroughPath := ""
+		if convertedImages {
+			body, err = geminiimage.ConvertRequest(body)
+			if err != nil {
+				var classified interface{ ConversionCode() string }
+				if errors.As(err, &classified) {
+					failure := notSentConversionFailure(classified.ConversionCode(), err.Error())
+					return preparedAttempt{}, &failure
+				}
+				failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "unsupported Gemini image generation input")
+				failure.Error.OriginHint, failure.Error.ScopeHint = execution.ErrorOriginClient, execution.ErrorScopeRequest
+				return preparedAttempt{}, &failure
+			}
+			passthroughPath = "/models/" + url.PathEscape(spec.UpstreamModel) + ":generateContent"
+		} else {
+			passthroughPath, err = nativePassthroughPath(spec, providerKind)
+		}
 		if err != nil {
 			failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid native request path")
 			return preparedAttempt{}, &failure
@@ -652,6 +674,10 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 			}
 		}
 		upstreamProtocol := spec.ClientProtocol
+		if convertedImages {
+			upstreamProtocol = protocol.Gemini
+			passthroughHeaders["Accept-Encoding"] = "identity"
+		}
 		return preparedAttempt{
 			provider:         provider,
 			mode:             mode,
@@ -883,7 +909,7 @@ func supportedRequestShape(spec execution.AttemptSpec, stream bool) bool {
 			return false
 		}
 		switch spec.ClientProtocol {
-		case protocol.OpenAICompletions, protocol.OpenAIResponses, protocol.OpenAIEmbeddings,
+		case protocol.OpenAICompletions, protocol.OpenAIResponses, protocol.OpenAIEmbeddings, protocol.Rerank,
 			protocol.Anthropic, protocol.Gemini:
 			return true
 		default:
@@ -914,7 +940,8 @@ func supportedRequestShape(spec execution.AttemptSpec, stream bool) bool {
 			return validResponsesPassthroughShape(spec, stream)
 		}
 	case protocol.OpenAIImages:
-		if spec.RouteMode != execution.RouteNative || spec.Method != http.MethodPost {
+		convertedGeneration := spec.RouteMode == execution.RouteConverted && spec.Operation == execution.OperationImagesGenerate
+		if (spec.RouteMode != execution.RouteNative && !convertedGeneration) || spec.Method != http.MethodPost {
 			return false
 		}
 		switch spec.Operation {
@@ -925,6 +952,8 @@ func supportedRequestShape(spec execution.AttemptSpec, stream bool) bool {
 		default:
 			return false
 		}
+	case protocol.Rerank:
+		return !stream && spec.RouteMode == execution.RouteNative && spec.Operation == execution.OperationRerank && spec.Method == http.MethodPost && spec.Path == "/v1/rerank"
 	case protocol.OpenAIEmbeddings:
 		return !stream && spec.RouteMode == execution.RouteNative &&
 			spec.Operation == execution.OperationEmbeddingsCreate &&
@@ -964,7 +993,9 @@ func normalizeImagesAttemptResult(spec execution.AttemptSpec, result *execution.
 	if result == nil || spec.ClientProtocol != protocol.OpenAIImages {
 		return
 	}
-	result.Usage = nil
+	if spec.RouteMode != execution.RouteConverted {
+		result.Usage = nil
+	}
 	if openAIResponseModel(result.Body, "") == "" {
 		result.Model = ""
 	}

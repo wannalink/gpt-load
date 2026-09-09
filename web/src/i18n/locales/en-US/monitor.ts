@@ -389,7 +389,7 @@ export default {
       title: 'Route inspector',
       description: 'Inspect candidate Groups and credentials by protocol, model, and access key.',
       boundary:
-        'Simulates a standard stateless request without conversation content or an affinity hit; Responses uses store:false, Images checks generation only, and Embeddings checks creation only. Read-only, with no upstream request or token usage.',
+        'Simulates a standard stateless request without conversation content or an affinity hit; Responses uses store:false, Images checks generation only, Embeddings checks creation only, and Rerank checks text reranking. Read-only, with no upstream request or token usage.',
       routeModes: {
         native: 'Native',
         converted: 'Protocol conversion',
@@ -408,6 +408,7 @@ export default {
         images_generate: 'Generate image',
         images_edit: 'Edit image',
         embeddings_create: 'Create embeddings',
+        rerank: 'Rerank documents',
       },
       routeRequirements: {
         any: 'Allow protocol conversion (possibly lossy)',
@@ -566,7 +567,7 @@ export default {
         group_weight_zero: 'Group effective weight is zero',
         credential_disabled: 'Credential is disabled',
         credential_blacklisted: 'Credential is blacklisted',
-        model_cooldown: 'The current model is cooling down on this credential',
+        model_cooldown: 'Model cooldown',
         credential_cooldown: 'Credential is cooling down',
         credential_auth_unavailable: 'Subscription authentication is currently unavailable',
         credential_weight_zero: 'Credential effective weight is zero',
@@ -601,6 +602,15 @@ export default {
         from: 'From',
         to: 'To',
         quickRanges: 'Quick time ranges',
+        quickDisplay: {
+          '1h': 'Last 1 hour',
+          '6h': 'Last 6 hours',
+          '24h': 'Last 24 hours',
+          '3d': 'Last 3 days',
+          '7d': 'Last 7 days',
+          '15d': 'Last 15 days',
+          '30d': 'Last 30 days',
+        },
         quick: {
           today: 'Today',
           yesterday: 'Yesterday',
@@ -665,13 +675,15 @@ export default {
         lastRefreshed: 'Last successful refresh',
         remove: 'Remove filter {value}',
         advancedTitle: 'More filters',
-        advancedDescription: 'Filter by request, retry attempts, final result, and numeric ranges.',
+        advancedDescription:
+          'Filter by request, upstream attempts, response timing, tokens, and cost.',
         closeAdvanced: 'Close more filters',
         sections: {
-          request: 'Request',
-          attempt: 'Retry attempts',
-          result: 'Final result',
-          ranges: 'Numeric ranges',
+          request: 'Request and response',
+          attempt: 'Upstream attempts and retries',
+          timing: 'Response timing',
+          usage: 'Tokens and cache',
+          cost: 'Cost and pricing',
         },
         retryState: { retried: 'Retried', not_retried: 'Not retried' },
         usageState: {
@@ -800,6 +812,7 @@ export default {
         images_generate: 'Generate image',
         images_edit: 'Edit image',
         embeddings_create: 'Create embeddings',
+        rerank: 'Rerank documents',
         list_models: 'List models',
         probe: 'Health probe',
       },

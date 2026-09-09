@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ListFilter, RefreshCw } from '@lucide/vue'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -13,22 +13,27 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppDateTimeRangePicker from '@/components/ui/AppDateTimeRangePicker.vue'
 import AppTabs, { type AppTabItem } from '@/components/ui/AppTabs.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
-import { localDateTimeInput, parseLocalDateTime, type DateTimePreset } from '@/lib/time'
-import { parseAppliedLogFilters } from './log-filters'
+import {
+  localDateTimeInput,
+  parseLocalDateTime,
+  resolveDateTimePreset,
+  type DateTimePreset,
+} from '@/lib/time'
 import { useAuthSession } from '@/features/auth/auth-session'
 
 import HealthTab from './HealthTab.vue'
+import { parseAppliedLogFilters } from './log-filters'
 import {
   normalizeAccessKeyMonitorQuery,
   normalizeMonitorQuery,
   normalizeMonitorTab,
   logsMonitorQuery,
-  parseLogsMonitorState,
   parseUsageMonitorState,
   sameMonitorQuery,
+  scopeAccessKeyLogFilters,
   scopeAccessKeyUsageFilters,
+  usageMonitorQuery,
 } from './monitor-route'
-import { usageMonitorQuery } from './monitor-route'
 import { parseAppliedUsageFilters } from './usage-filters'
 
 const InspectorTab = lazySurface(() => import('./InspectorTab.vue'))
@@ -40,6 +45,11 @@ const session = useAuthSession()
 const router = useRouter()
 const { t } = useI18n()
 const healthTab = ref<InstanceType<typeof HealthTab> | null>(null)
+const logsTab = ref<{
+  openFilters: () => void
+  refresh: () => Promise<void>
+  filterCount: number
+} | null>(null)
 const usageTab = ref<{
   openFilters: () => void
   refresh: () => Promise<void>
@@ -47,6 +57,7 @@ const usageTab = ref<{
   navigationPending: boolean
 } | null>(null)
 const healthRefreshPending = ref(false)
+const logsRefreshPending = ref(false)
 const usageRefreshPending = ref(false)
 const isAccessKey = computed(() => session.state.principalType === 'access_key')
 const canonicalQuery = computed(() =>
@@ -55,6 +66,10 @@ const canonicalQuery = computed(() =>
     : normalizeMonitorQuery(route.query),
 )
 const activeTab = computed(() => normalizeMonitorTab(canonicalQuery.value.tab))
+const dataTab = computed(() => (activeTab.value === 'logs' ? logsTab.value : usageTab.value))
+const dataRefreshPending = computed(() =>
+  activeTab.value === 'logs' ? logsRefreshPending.value : usageRefreshPending.value,
+)
 const isCanonicalQuery = computed(() => sameMonitorQuery(route.query, canonicalQuery.value))
 const items = computed<AppTabItem[]>(() => {
   const shared = [
@@ -73,17 +88,50 @@ const items = computed<AppTabItem[]>(() => {
         { value: 'inspector', label: t('monitor.tabs.inspector') },
       ]
 })
+const routeUsageFilters = computed(() => parseAppliedUsageFilters(route.query))
+const routeLogFilters = computed(() => parseAppliedLogFilters(route.query))
+const routeTimeFilters = computed(() =>
+  activeTab.value === 'logs' ? routeLogFilters.value : routeUsageFilters.value,
+)
+const resolvedTimeRange = ref<{ from_ms: number; to_ms: number; preset?: DateTimePreset }>()
+
+// 快捷范围只在进入页面、切换快捷项或显式刷新时解析，筛选和翻页共用同一区间。
+watch(
+  () => {
+    if (activeTab.value !== 'logs' && activeTab.value !== 'usage') return undefined
+    const filters = routeTimeFilters.value
+    return filters.preset ?? `${filters.from_ms}:${filters.to_ms}`
+  },
+  (selection) => {
+    if (selection === undefined) {
+      resolvedTimeRange.value = undefined
+      return
+    }
+    const { from_ms, to_ms, preset } = routeTimeFilters.value
+    if (preset && resolvedTimeRange.value?.preset === preset) return
+    resolvedTimeRange.value = { from_ms, to_ms, preset }
+  },
+  { immediate: true },
+)
+
 const usageFilters = computed(() => {
-  const filters = parseAppliedUsageFilters(route.query)
+  const filters = { ...routeUsageFilters.value, ...resolvedTimeRange.value }
   return isAccessKey.value ? scopeAccessKeyUsageFilters(filters) : filters
 })
-const usageTimeDraft = ref<{ from: string; to: string; preset?: DateTimePreset }>({
+const logFilters = computed(() => {
+  const filters = { ...routeLogFilters.value, ...resolvedTimeRange.value }
+  return isAccessKey.value ? scopeAccessKeyLogFilters(filters) : filters
+})
+const timeFilters = computed(() =>
+  activeTab.value === 'logs' ? logFilters.value : usageFilters.value,
+)
+const timeDraft = ref<{ from: string; to: string; preset?: DateTimePreset }>({
   from: '',
   to: '',
 })
-const usageTimeValues = computed(() => {
-  const draft = usageTimeDraft.value
-  const current = usageFilters.value
+const timeValues = computed(() => {
+  const draft = timeDraft.value
+  const current = timeFilters.value
   // 回拨时同一本地时间对应两个时刻，未改动的端点保留原始毫秒值。
   return {
     from:
@@ -96,8 +144,8 @@ const usageTimeValues = computed(() => {
         : parseLocalDateTime(draft.to)?.getTime(),
   }
 })
-const usageTimeErrors = computed(() => {
-  const { from, to } = usageTimeValues.value
+const timeErrors = computed(() => {
+  const { from, to } = timeValues.value
   return {
     from: from === undefined ? t('monitor.logs.errors.dateTime') : undefined,
     to:
@@ -109,8 +157,13 @@ const usageTimeErrors = computed(() => {
   }
 })
 watch(
-  () => [usageFilters.value.from_ms, usageFilters.value.to_ms, usageFilters.value.preset],
-  resetUsageTimeDraft,
+  () => [
+    activeTab.value,
+    timeFilters.value.from_ms,
+    timeFilters.value.to_ms,
+    timeFilters.value.preset,
+  ],
+  resetTimeDraft,
   { immediate: true },
 )
 const usageFilterCount = computed(
@@ -120,6 +173,9 @@ const usageFilterCount = computed(
     Number(!isAccessKey.value && usageFilters.value.channel_id !== undefined) +
     Number(!isAccessKey.value && usageFilters.value.credential_id !== undefined) +
     Number(usageFilters.value.upstream_model !== undefined),
+)
+const filterCount = computed(() =>
+  activeTab.value === 'logs' ? (logsTab.value?.filterCount ?? 0) : usageFilterCount.value,
 )
 
 watch(
@@ -150,6 +206,7 @@ function selectTab(value: string): void {
             limit: 20,
             from_ms: logRange.from_ms,
             to_ms: logRange.to_ms,
+            preset: filters.preset,
             access_key_id: filters.access_key_id,
             group_id: filters.group_id,
             channel_id: filters.channel_id,
@@ -159,7 +216,6 @@ function selectTab(value: string): void {
           {
             filtersOpen: false,
             cursorHistory: [],
-            usagePreset: filters.preset,
           },
         ),
       ),
@@ -167,12 +223,8 @@ function selectTab(value: string): void {
     return
   }
   if (activeTab.value === 'logs' && tab === 'usage') {
-    const filters = parseAppliedLogFilters(route.query)
-    const previous = parseLogsMonitorState(route.query)
     void router.push(
-      monitorLocation(
-        usageMonitorQuery(parseAppliedUsageFilters({ ...filters, preset: previous.usagePreset })),
-      ),
+      monitorLocation(usageMonitorQuery(parseAppliedUsageFilters({ ...logFilters.value }))),
     )
     return
   }
@@ -189,36 +241,53 @@ async function refreshHealth(): Promise<void> {
   }
 }
 
-async function refreshUsage(): Promise<void> {
-  if (!usageTab.value || usageRefreshPending.value) return
-  usageRefreshPending.value = true
+async function refreshData(): Promise<void> {
+  const current = dataTab.value
+  const pending = activeTab.value === 'logs' ? logsRefreshPending : usageRefreshPending
+  if (!current || pending.value) return
+  pending.value = true
   try {
-    await usageTab.value.refresh()
+    const preset = timeFilters.value.preset
+    if (preset) {
+      const interval = resolveDateTimePreset(preset, Math.floor(Date.now() / 1000) * 1000)
+      if (interval.to_ms > interval.from_ms) {
+        resolvedTimeRange.value = { ...interval, preset }
+        await nextTick()
+      }
+    }
+    await current.refresh()
   } finally {
-    usageRefreshPending.value = false
+    pending.value = false
   }
 }
 
-function selectUsageShortcut(preset: DateTimePreset, from: number, to: number): void {
+function selectTimeShortcut(preset: DateTimePreset, from: number, to: number): void {
   if (to <= from) return
-  applyUsageTimeRange(from, to, preset)
+  applyTimeRange(from, to, preset)
 }
 
-function resetUsageTimeDraft(): void {
-  usageTimeDraft.value = {
-    from: localDateTimeInput(usageFilters.value.from_ms),
-    to: localDateTimeInput(usageFilters.value.to_ms),
-    preset: usageFilters.value.preset,
+function resetTimeDraft(): void {
+  timeDraft.value = {
+    from: localDateTimeInput(timeFilters.value.from_ms),
+    to: localDateTimeInput(timeFilters.value.to_ms),
+    preset: timeFilters.value.preset,
   }
 }
 
-function applyUsageCustomTime(): void {
-  const { from, to } = usageTimeValues.value
+function applyCustomTime(): void {
+  const { from, to } = timeValues.value
   if (from === undefined || to === undefined || to <= from) return
-  applyUsageTimeRange(from, to, usageTimeDraft.value.preset)
+  applyTimeRange(from, to)
 }
 
-function applyUsageTimeRange(from: number, to: number, preset?: DateTimePreset): void {
+function applyTimeRange(from: number, to: number, preset?: DateTimePreset): void {
+  resolvedTimeRange.value = { from_ms: from, to_ms: to, preset }
+  if (activeTab.value === 'logs') {
+    void router.push(
+      monitorLocation(logsMonitorQuery({ ...logFilters.value, from_ms: from, to_ms: to, preset })),
+    )
+    return
+  }
   const state = parseUsageMonitorState(route.query)
   void router.push(
     monitorLocation(
@@ -241,7 +310,7 @@ function applyUsageTimeRange(from: number, to: number, preset?: DateTimePreset):
       <PageHeader id="monitor-title" :title="t('monitor.title')" />
       <AppTabs
         class="monitor-tabs"
-        :class="{ 'monitor-tabs--usage': activeTab === 'usage' }"
+        :class="{ 'monitor-tabs--data': activeTab === 'usage' || activeTab === 'logs' }"
         :model-value="activeTab"
         :label="t('monitor.tabs.label')"
         :items="items"
@@ -264,41 +333,45 @@ function applyUsageTimeRange(from: number, to: number, preset?: DateTimePreset):
             />
             {{ t('monitor.health.refresh') }}
           </AppButton>
-          <div v-else-if="activeTab === 'usage'" class="monitor-usage-actions">
+          <div
+            v-else-if="activeTab === 'usage' || activeTab === 'logs'"
+            class="monitor-data-actions"
+          >
             <AppDateTimeRangePicker
-              v-model:from="usageTimeDraft.from"
-              v-model:to="usageTimeDraft.to"
-              v-model:preset="usageTimeDraft.preset"
-              :applied-from="localDateTimeInput(usageFilters.from_ms)"
-              :applied-to="localDateTimeInput(usageFilters.to_ms)"
+              :key="activeTab"
+              v-model:from="timeDraft.from"
+              v-model:to="timeDraft.to"
+              v-model:preset="timeDraft.preset"
+              :applied-from="localDateTimeInput(timeFilters.from_ms)"
+              :applied-to="localDateTimeInput(timeFilters.to_ms)"
+              :applied-preset="timeFilters.preset"
               :label="t('monitor.usage.filters.range')"
               :from-label="t('monitor.logs.filters.from')"
               :to-label="t('monitor.logs.filters.to')"
-              :from-error="usageTimeErrors.from"
-              :to-error="usageTimeErrors.to"
-              :rolling-end-offset-ms="0"
+              :from-error="timeErrors.from"
+              :to-error="timeErrors.to"
               :apply-label="t('monitor.usage.filters.apply')"
-              :apply-disabled="Boolean(usageTimeErrors.from || usageTimeErrors.to)"
-              @shortcut="selectUsageShortcut"
-              @apply="applyUsageCustomTime"
-              @open="resetUsageTimeDraft"
+              :apply-disabled="Boolean(timeErrors.from || timeErrors.to)"
+              @shortcut="selectTimeShortcut"
+              @apply="applyCustomTime"
+              @open="resetTimeDraft"
             />
-            <AppButton variant="secondary" size="compact" @click="usageTab?.openFilters()">
+            <AppButton variant="secondary" size="compact" @click="dataTab?.openFilters()">
               <ListFilter :size="14" aria-hidden="true" />
               {{ t('monitor.usage.filters.button') }}
-              <span v-if="usageFilterCount > 0" class="monitor-filter-count">
-                {{ usageFilterCount }}
+              <span v-if="filterCount > 0" class="monitor-filter-count">
+                {{ filterCount }}
               </span>
             </AppButton>
             <AppButton
               class="monitor-refresh"
               variant="secondary"
               size="compact"
-              :busy="usageRefreshPending"
-              @click="refreshUsage"
+              :busy="dataRefreshPending"
+              @click="refreshData"
             >
               <RefreshCw
-                :class="{ 'monitor-refresh-icon--spinning': usageRefreshPending }"
+                :class="{ 'monitor-refresh-icon--spinning': dataRefreshPending }"
                 :size="14"
                 aria-hidden="true"
               />
@@ -312,10 +385,10 @@ function applyUsageTimeRange(from: number, to: number, preset?: DateTimePreset):
             <HealthTab ref="healthTab" />
           </div>
           <div v-else-if="activeTab === 'logs'" class="monitor-panel">
-            <LogsTab />
+            <LogsTab ref="logsTab" :filters="logFilters" />
           </div>
           <div v-else-if="activeTab === 'usage'" class="monitor-panel">
-            <UsageTab ref="usageTab" />
+            <UsageTab ref="usageTab" :filters="usageFilters" />
           </div>
           <div v-else class="monitor-panel">
             <InspectorTab />
@@ -352,7 +425,7 @@ function applyUsageTimeRange(from: number, to: number, preset?: DateTimePreset):
   opacity: 1;
 }
 
-.monitor-usage-actions {
+.monitor-data-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -386,24 +459,24 @@ function applyUsageTimeRange(from: number, to: number, preset?: DateTimePreset):
     padding-top: var(--detail-panel-padding-top-compact);
   }
 
-  .monitor-tabs--usage :deep(.app-tabs__bar) {
+  .monitor-tabs--data :deep(.app-tabs__bar) {
     flex-wrap: wrap;
   }
 
-  .monitor-tabs--usage :deep(.app-tabs__list),
-  .monitor-tabs--usage :deep(.app-tabs__actions) {
+  .monitor-tabs--data :deep(.app-tabs__list),
+  .monitor-tabs--data :deep(.app-tabs__actions) {
     width: 100%;
   }
 }
 
 @media (max-width: 560px) {
-  .monitor-usage-actions {
+  .monitor-data-actions {
     width: 100%;
     flex-wrap: wrap;
     gap: var(--space-1);
   }
 
-  .monitor-usage-actions :deep(.app-popover) {
+  .monitor-data-actions :deep(.app-popover) {
     flex-basis: 100%;
   }
 }

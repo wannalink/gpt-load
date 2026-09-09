@@ -1,13 +1,12 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { AccessKeyOptionDto } from '@/api/control/types'
-import { enabledDataProtocols } from '@/api/control/protocols'
-import type { ChannelDto } from '@/app/resources/channels'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppDrawer from '@/components/ui/AppDrawer.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import FormField from '@/components/ui/FormField.vue'
+import InlineFeedback from '@/components/ui/InlineFeedback.vue'
 
 import {
   requestLogCostStates,
@@ -23,10 +22,6 @@ const props = defineProps<{
   open: boolean
   draft: LogFilterDraft
   errors: LogFilterErrors
-  accessKeys: AccessKeyOptionDto[]
-  channels: ChannelDto[]
-  accessKeysFailed: boolean
-  channelsFailed: boolean
   selfScoped?: boolean
 }>()
 const emit = defineEmits<{
@@ -36,16 +31,24 @@ const emit = defineEmits<{
   reset: []
 }>()
 const { t } = useI18n()
+const commonError = computed(() => {
+  for (const [field, label] of [
+    ['group_id', 'group'],
+    ['channel_id', 'channel'],
+    ['access_key_id', 'accessKey'],
+    ['client_model', 'clientModel'],
+  ] as const) {
+    const key = props.errors[field]
+    if (key) return `${t(`monitor.logs.filters.${label}`)}: ${t(key)}`
+  }
+  return ''
+})
 
 const option = (value: string, label: string) => ({ value, label })
 const booleanOptions = () => [
   option('', t('monitor.logs.filters.any')),
   option('true', t('monitor.logs.yes')),
   option('false', t('monitor.logs.no')),
-]
-const protocolOptions = () => [
-  option('', t('monitor.logs.filters.anyProtocol')),
-  ...enabledDataProtocols.map((value) => option(value, value)),
 ]
 const usageOptions = () => [
   option('', t('monitor.logs.filters.any')),
@@ -77,20 +80,6 @@ const retryOptions = () => [
     option(value, t(`monitor.logs.filters.retryState.${value}`)),
   ),
 ]
-const accessKeyOptions = () => [
-  option('', t('monitor.logs.filters.anyAccessKey')),
-  ...props.accessKeys.map((key) => option(String(key.id), `${key.name} · #${key.id}`)),
-]
-const channelOptions = () => {
-  const options = [option('', t('monitor.logs.filters.anyChannel'))]
-  if (
-    props.draft.channel_id &&
-    !props.channels.some((channel) => channel.channel_id === props.draft.channel_id)
-  ) {
-    options.push(option(props.draft.channel_id, props.draft.channel_id))
-  }
-  return [...options, ...props.channels.map((channel) => option(channel.channel_id, channel.name))]
-}
 
 function error(field: keyof LogFilterDraft): string | undefined {
   const key = props.errors[field]
@@ -111,43 +100,14 @@ function update(field: keyof LogFilterDraft, value: string): void {
     :close-label="t('monitor.logs.filters.closeAdvanced')"
     @update:open="emit('update:open', $event)"
   >
+    <InlineFeedback v-if="commonError" tone="danger">{{ commonError }}</InlineFeedback>
     <form class="logs-advanced" @submit.prevent="emit('apply')">
       <section class="logs-advanced__section">
         <h3>{{ t('monitor.logs.filters.sections.request') }}</h3>
         <div class="logs-advanced__grid">
           <FormField
-            v-if="!selfScoped"
-            id="logs-access-key"
-            :label="t('monitor.logs.filters.accessKey')"
-            size="compact"
-            :error="error('access_key_id')"
-          >
-            <template #default="{ describedBy, invalid }">
-              <AppSelect
-                id="logs-access-key"
-                :model-value="draft.access_key_id"
-                :label="t('monitor.logs.filters.accessKey')"
-                :options="accessKeyOptions()"
-                size="compact"
-                :disabled="accessKeysFailed"
-                :aria-describedby="describedBy"
-                :aria-invalid="invalid || undefined"
-                @update:model-value="update('access_key_id', $event)"
-              />
-            </template>
-          </FormField>
-          <FormField id="logs-protocol" :label="t('monitor.logs.filters.protocol')" size="compact">
-            <AppSelect
-              id="logs-protocol"
-              :model-value="draft.protocol"
-              :label="t('monitor.logs.filters.protocol')"
-              :options="protocolOptions()"
-              size="compact"
-              @update:model-value="update('protocol', $event)"
-            />
-          </FormField>
-          <FormField
             id="logs-request-id"
+            class="logs-advanced__request-id"
             :label="t('monitor.logs.filters.requestId')"
             size="compact"
             :error="error('request_id')"
@@ -158,6 +118,7 @@ function update(field: keyof LogFilterDraft, value: string): void {
                 :value="draft.request_id"
                 class="logs-advanced__mono"
                 autocomplete="off"
+                :spellcheck="false"
                 :aria-describedby="describedBy"
                 :aria-invalid="invalid || undefined"
                 @input="update('request_id', ($event.target as HTMLInputElement).value)"
@@ -170,9 +131,26 @@ function update(field: keyof LogFilterDraft, value: string): void {
               :model-value="draft.stream"
               :label="t('monitor.logs.filters.stream')"
               :options="booleanOptions()"
-              size="compact"
+              size="sm"
               @update:model-value="update('stream', $event)"
             />
+          </FormField>
+          <FormField
+            id="logs-final-code"
+            :label="t('monitor.logs.filters.finalStatusCode')"
+            size="compact"
+            :error="error('final_status_code')"
+          >
+            <template #default="{ describedBy, invalid }">
+              <input
+                id="logs-final-code"
+                :value="draft.final_status_code"
+                inputmode="numeric"
+                :aria-describedby="describedBy"
+                :aria-invalid="invalid || undefined"
+                @input="update('final_status_code', ($event.target as HTMLInputElement).value)"
+              />
+            </template>
           </FormField>
         </div>
       </section>
@@ -180,35 +158,6 @@ function update(field: keyof LogFilterDraft, value: string): void {
       <section v-if="!selfScoped" class="logs-advanced__section">
         <h3>{{ t('monitor.logs.filters.sections.attempt') }}</h3>
         <div class="logs-advanced__grid">
-          <FormField
-            id="logs-channel"
-            :label="t('monitor.logs.filters.channel')"
-            size="compact"
-            :error="error('channel_id')"
-          >
-            <template #default="{ describedBy, invalid }">
-              <input
-                v-if="channelsFailed"
-                id="logs-channel"
-                :value="draft.channel_id"
-                autocomplete="off"
-                :aria-describedby="describedBy"
-                :aria-invalid="invalid || undefined"
-                @input="update('channel_id', ($event.target as HTMLInputElement).value)"
-              />
-              <AppSelect
-                v-else
-                id="logs-channel"
-                :model-value="draft.channel_id"
-                :label="t('monitor.logs.filters.channel')"
-                :options="channelOptions()"
-                size="compact"
-                :aria-describedby="describedBy"
-                :aria-invalid="invalid || undefined"
-                @update:model-value="update('channel_id', $event)"
-              />
-            </template>
-          </FormField>
           <FormField
             id="logs-credential"
             :label="t('monitor.logs.filters.credential')"
@@ -244,6 +193,54 @@ function update(field: keyof LogFilterDraft, value: string): void {
             </template>
           </FormField>
           <FormField
+            id="logs-attempt-code"
+            :label="t('monitor.logs.filters.attemptStatusCode')"
+            size="compact"
+            :error="error('attempt_status_code')"
+          >
+            <template #default="{ describedBy, invalid }">
+              <input
+                id="logs-attempt-code"
+                :value="draft.attempt_status_code"
+                inputmode="numeric"
+                :aria-describedby="describedBy"
+                :aria-invalid="invalid || undefined"
+                @input="update('attempt_status_code', ($event.target as HTMLInputElement).value)"
+              />
+            </template>
+          </FormField>
+          <FormField
+            id="logs-failure"
+            :label="t('monitor.logs.filters.failureCategory')"
+            size="compact"
+          >
+            <AppSelect
+              id="logs-failure"
+              :model-value="draft.failure_category"
+              :label="t('monitor.logs.filters.failureCategory')"
+              :options="failureOptions()"
+              size="sm"
+              @update:model-value="update('failure_category', $event)"
+            />
+          </FormField>
+          <FormField
+            id="logs-error-code"
+            :label="t('monitor.logs.filters.errorCode')"
+            size="compact"
+            :error="error('error_code')"
+          >
+            <template #default="{ describedBy, invalid }">
+              <input
+                id="logs-error-code"
+                :value="draft.error_code"
+                autocomplete="off"
+                :aria-describedby="describedBy"
+                :aria-invalid="invalid || undefined"
+                @input="update('error_code', ($event.target as HTMLInputElement).value)"
+              />
+            </template>
+          </FormField>
+          <FormField
             id="logs-retry-state"
             :label="t('monitor.logs.filters.retryStateLabel')"
             size="compact"
@@ -253,7 +250,7 @@ function update(field: keyof LogFilterDraft, value: string): void {
               :model-value="draft.retry_state"
               :label="t('monitor.logs.filters.retryStateLabel')"
               :options="retryOptions()"
-              size="compact"
+              size="sm"
               @update:model-value="update('retry_state', $event)"
             />
           </FormField>
@@ -291,51 +288,33 @@ function update(field: keyof LogFilterDraft, value: string): void {
               />
             </template>
           </FormField>
+        </div>
+      </section>
+
+      <section class="logs-advanced__section">
+        <h3>{{ t('monitor.logs.filters.sections.timing') }}</h3>
+        <div class="logs-advanced__grid">
           <FormField
-            id="logs-attempt-code"
-            :label="t('monitor.logs.filters.attemptStatusCode')"
+            v-for="field in [
+              'first_response_min_ms',
+              'first_response_max_ms',
+              'duration_min_ms',
+              'duration_max_ms',
+            ] as const"
+            :id="`logs-${field}`"
+            :key="field"
+            :label="t(`monitor.logs.filters.rangeFields.${field}`)"
             size="compact"
-            :error="error('attempt_status_code')"
+            :error="error(field)"
           >
             <template #default="{ describedBy, invalid }">
               <input
-                id="logs-attempt-code"
-                :value="draft.attempt_status_code"
+                :id="`logs-${field}`"
+                :value="draft[field]"
                 inputmode="numeric"
                 :aria-describedby="describedBy"
                 :aria-invalid="invalid || undefined"
-                @input="update('attempt_status_code', ($event.target as HTMLInputElement).value)"
-              />
-            </template>
-          </FormField>
-          <FormField
-            id="logs-failure"
-            :label="t('monitor.logs.filters.failureCategory')"
-            size="compact"
-          >
-            <AppSelect
-              id="logs-failure"
-              :model-value="draft.failure_category"
-              :label="t('monitor.logs.filters.failureCategory')"
-              :options="failureOptions()"
-              size="compact"
-              @update:model-value="update('failure_category', $event)"
-            />
-          </FormField>
-          <FormField
-            id="logs-error-code"
-            :label="t('monitor.logs.filters.errorCode')"
-            size="compact"
-            :error="error('error_code')"
-          >
-            <template #default="{ describedBy, invalid }">
-              <input
-                id="logs-error-code"
-                :value="draft.error_code"
-                autocomplete="off"
-                :aria-describedby="describedBy"
-                :aria-invalid="invalid || undefined"
-                @input="update('error_code', ($event.target as HTMLInputElement).value)"
+                @input="update(field, ($event.target as HTMLInputElement).value)"
               />
             </template>
           </FormField>
@@ -343,25 +322,8 @@ function update(field: keyof LogFilterDraft, value: string): void {
       </section>
 
       <section class="logs-advanced__section">
-        <h3>{{ t('monitor.logs.filters.sections.result') }}</h3>
+        <h3>{{ t('monitor.logs.filters.sections.usage') }}</h3>
         <div class="logs-advanced__grid">
-          <FormField
-            id="logs-final-code"
-            :label="t('monitor.logs.filters.finalStatusCode')"
-            size="compact"
-            :error="error('final_status_code')"
-          >
-            <template #default="{ describedBy, invalid }">
-              <input
-                id="logs-final-code"
-                :value="draft.final_status_code"
-                inputmode="numeric"
-                :aria-describedby="describedBy"
-                :aria-invalid="invalid || undefined"
-                @input="update('final_status_code', ($event.target as HTMLInputElement).value)"
-              />
-            </template>
-          </FormField>
           <FormField
             id="logs-usage-state"
             :label="t('monitor.logs.filters.usageStateLabel')"
@@ -372,10 +334,50 @@ function update(field: keyof LogFilterDraft, value: string): void {
               :model-value="draft.usage_state"
               :label="t('monitor.logs.filters.usageStateLabel')"
               :options="usageOptions()"
-              size="compact"
+              size="sm"
               @update:model-value="update('usage_state', $event)"
             />
           </FormField>
+          <FormField id="logs-cache" :label="t('monitor.logs.filters.cachePresent')" size="compact">
+            <AppSelect
+              id="logs-cache"
+              :model-value="draft.cache_present"
+              :label="t('monitor.logs.filters.cachePresent')"
+              :options="booleanOptions()"
+              size="sm"
+              @update:model-value="update('cache_present', $event)"
+            />
+          </FormField>
+          <FormField
+            v-for="field in [
+              'input_tokens_min',
+              'input_tokens_max',
+              'output_tokens_min',
+              'output_tokens_max',
+            ] as const"
+            :id="`logs-${field}`"
+            :key="field"
+            :label="t(`monitor.logs.filters.rangeFields.${field}`)"
+            size="compact"
+            :error="error(field)"
+          >
+            <template #default="{ describedBy, invalid }">
+              <input
+                :id="`logs-${field}`"
+                :value="draft[field]"
+                inputmode="numeric"
+                :aria-describedby="describedBy"
+                :aria-invalid="invalid || undefined"
+                @input="update(field, ($event.target as HTMLInputElement).value)"
+              />
+            </template>
+          </FormField>
+        </div>
+      </section>
+
+      <section class="logs-advanced__section">
+        <h3>{{ t('monitor.logs.filters.sections.cost') }}</h3>
+        <div class="logs-advanced__grid">
           <FormField
             id="logs-cost-state"
             :label="t('monitor.logs.filters.costStateLabel')"
@@ -386,7 +388,7 @@ function update(field: keyof LogFilterDraft, value: string): void {
               :model-value="draft.cost_state"
               :label="t('monitor.logs.filters.costStateLabel')"
               :options="costOptions()"
-              size="compact"
+              size="sm"
               @update:model-value="update('cost_state', $event)"
             />
           </FormField>
@@ -400,39 +402,12 @@ function update(field: keyof LogFilterDraft, value: string): void {
               :model-value="draft.pricing_completeness"
               :label="t('monitor.logs.filters.completenessLabel')"
               :options="completenessOptions()"
-              size="compact"
+              size="sm"
               @update:model-value="update('pricing_completeness', $event)"
             />
           </FormField>
-          <FormField id="logs-cache" :label="t('monitor.logs.filters.cachePresent')" size="compact">
-            <AppSelect
-              id="logs-cache"
-              :model-value="draft.cache_present"
-              :label="t('monitor.logs.filters.cachePresent')"
-              :options="booleanOptions()"
-              size="compact"
-              @update:model-value="update('cache_present', $event)"
-            />
-          </FormField>
-        </div>
-      </section>
-
-      <section class="logs-advanced__section">
-        <h3>{{ t('monitor.logs.filters.sections.ranges') }}</h3>
-        <div class="logs-advanced__grid">
           <FormField
-            v-for="field in [
-              'first_response_min_ms',
-              'first_response_max_ms',
-              'duration_min_ms',
-              'duration_max_ms',
-              'input_tokens_min',
-              'input_tokens_max',
-              'output_tokens_min',
-              'output_tokens_max',
-              'cost_min_usd',
-              'cost_max_usd',
-            ] as const"
+            v-for="field in ['cost_min_usd', 'cost_max_usd'] as const"
             :id="`logs-${field}`"
             :key="field"
             :label="t(`monitor.logs.filters.rangeFields.${field}`)"
@@ -500,6 +475,7 @@ function update(field: keyof LogFilterDraft, value: string): void {
 
 .logs-advanced__grid {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 10px;
 }
@@ -508,8 +484,12 @@ function update(field: keyof LogFilterDraft, value: string): void {
   width: 100%;
 }
 
+.logs-advanced__request-id {
+  grid-column: 1 / -1;
+}
+
 .logs-advanced__mono {
-  font-family: var(--font-mono) !important;
+  font-family: var(--font-mono);
 }
 
 .logs-advanced__footer-actions {

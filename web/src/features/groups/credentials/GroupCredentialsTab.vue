@@ -264,10 +264,7 @@ const credentialTestDialogResult = computed(() => {
   }
 })
 const hasChangedConditions = computed(
-  () =>
-    filters.value.q !== undefined ||
-    filters.value.status !== undefined ||
-    filters.value.model_cooldown === true,
+  () => filters.value.q !== undefined || filters.value.status !== undefined,
 )
 const statusSummaryItems = computed(() => {
   const summary = collection.value?.summary
@@ -324,13 +321,7 @@ watch(
 )
 
 watch(
-  () => [
-    filters.value.status,
-    filters.value.q,
-    filters.value.page,
-    filters.value.page_size,
-    filters.value.model_cooldown,
-  ],
+  () => [filters.value.status, filters.value.q, filters.value.page, filters.value.page_size],
   () => {
     selectedIds.value = new Set()
   },
@@ -379,9 +370,7 @@ function updateRoute(
 }
 
 function setFilter(
-  patch: Partial<
-    Pick<CredentialCollectionFilters, 'q' | 'status' | 'page_size' | 'model_cooldown'>
-  >,
+  patch: Partial<Pick<CredentialCollectionFilters, 'q' | 'status' | 'page_size'>>,
 ): void {
   updateRoute({ ...filters.value, ...patch, page: 1 })
 }
@@ -466,7 +455,6 @@ function currentSelectionContext(): string {
   return JSON.stringify({
     groupId: props.groupId,
     status: filters.value.status ?? null,
-    modelCooldown: filters.value.model_cooldown ?? false,
     query: filters.value.q ?? null,
     page: filters.value.page,
     pageSize: filters.value.page_size,
@@ -1679,23 +1667,8 @@ async function runBatch(
             </AppButton>
           </span>
         </label>
-        <label class="group-credentials__model-filter">
-          <input
-            type="checkbox"
-            :checked="filters.model_cooldown === true"
-            @change="
-              setFilter({
-                model_cooldown: ($event.target as HTMLInputElement).checked ? true : undefined,
-              })
-            "
-          />
-          {{
-            t('group.credentials.modelCooldown.credentialCount', {
-              count: n(collection.summary.model_cooldown),
-            })
-          }}
-        </label>
         <CredentialBatchBar
+          class="group-credentials__batch-bar"
           :selected-count="selectedCount"
           :all-visible-selected="allVisibleSelected"
           :pending="batchBusy || singleBusy"
@@ -1926,12 +1899,8 @@ async function runBatch(
 </template>
 
 <style scoped>
-.group-credentials__model-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-label-xs);
-  white-space: nowrap;
+.group-credentials__batch-bar {
+  margin-left: auto;
 }
 .group-credentials {
   display: grid;
@@ -1950,10 +1919,10 @@ async function runBatch(
   overflow-wrap: anywhere;
 }
 .group-credentials__tools {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto minmax(0, max-content);
-  align-items: start;
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
   border-bottom: 1px solid var(--color-border-subtle);
   margin-bottom: var(--space-4);
   padding: 13px 0 var(--space-3);
@@ -1962,14 +1931,15 @@ async function runBatch(
   display: flex;
   min-width: 0;
   align-items: center;
-  width: 420px;
-  max-width: 100%;
+  flex: 1 1 260px;
+  max-width: 420px;
 }
 .group-credentials__search-controls {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 10px;
+  width: 100%;
 }
 .group-credentials__search-input {
   width: 420px;
@@ -2024,7 +1994,7 @@ async function runBatch(
 }
 .group-credentials__accounts {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
   align-items: start;
   gap: var(--space-3);
 }
@@ -2033,24 +2003,24 @@ async function runBatch(
   gap: var(--space-3);
   padding: var(--space-4) 0;
 }
-/* 操作列收成「更多操作 + 展开」两个图标后只需固定 80px，省下的宽度还给信息列。 */
+/* 状态列容纳凭据状态与模型冷却两个标记，避免挤占相邻信息列。 */
 .group-credential-record-grid {
   --ledger-record-list-record-min-height: 52px;
   --ledger-record-list-record-padding: 8px 0;
-  --ledger-record-list-grid: 48px minmax(200px, 1.5fr) 116px minmax(130px, 0.85fr)
-    minmax(170px, 1.1fr) 80px;
+  --ledger-record-list-grid: 48px minmax(140px, 1fr) minmax(256px, max-content) 80px
+    minmax(112px, 0.55fr) 80px;
   --ledger-record-list-column-gap: 12px;
 }
 @media (max-width: 1120px) {
   .group-credential-record-grid {
-    --ledger-record-list-grid: 44px minmax(160px, 1.3fr) 108px minmax(112px, 0.8fr)
-      minmax(140px, 1fr) 76px;
+    --ledger-record-list-grid: 44px minmax(120px, 1fr) minmax(256px, max-content) 70px
+      minmax(90px, 0.65fr) 76px;
     --ledger-record-list-column-gap: 9px;
   }
 }
 @media (max-width: 1023px) and (min-width: 861px) {
   .group-credential-record-grid {
-    --ledger-record-list-grid: 44px minmax(150px, 1.3fr) 108px minmax(110px, 0.8fr) 76px;
+    --ledger-record-list-grid: 44px minmax(120px, 1fr) minmax(256px, max-content) 70px 76px;
   }
   .group-credential-record-grid :deep(.ledger-record-list__header > :nth-child(5)),
   .group-credential-record-grid :deep(.group-credential-record__recent) {
@@ -2058,9 +2028,6 @@ async function runBatch(
   }
 }
 @media (max-width: 860px) {
-  .group-credentials__tools {
-    grid-template-columns: 1fr;
-  }
   .group-credential-record-grid {
     --ledger-record-list-card-grid: minmax(0, 0.8fr) minmax(0, 1.2fr);
   }
@@ -2069,8 +2036,16 @@ async function runBatch(
   .group-credentials {
     padding-top: var(--detail-panel-padding-top-compact);
   }
+  .group-credentials__batch-bar {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
 }
 @media (max-width: 560px) {
+  .group-credentials__search-field {
+    flex-basis: 100%;
+    max-width: none;
+  }
   .group-credentials__search-field,
   .group-credentials__search-input {
     width: 100%;

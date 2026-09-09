@@ -5,14 +5,12 @@ import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
 
 import type { HealthProblemCredentialDto } from '@/app/resources/health'
-import type { HealthModelCooldownCredentialDto } from '@/api/control/types'
 import { groupDetailLocation, monitorLocation } from '@/app/route-locations'
 import LedgerRecordList from '@/components/collection/LedgerRecordList.vue'
 import AppTooltip from '@/components/ui/AppTooltip.vue'
 import IconButton from '@/components/ui/IconButton.vue'
 import OverflowTooltip from '@/components/ui/OverflowTooltip.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import ModelCooldownDetails from '@/components/ui/ModelCooldownDetails.vue'
 
 import MonitorSectionHeading from './MonitorSectionHeading.vue'
 
@@ -29,7 +27,6 @@ interface RecoveryDisplay {
 
 const props = defineProps<{
   items: HealthProblemItem[]
-  modelCooldownCredentials: HealthModelCooldownCredentialDto[]
   recoveryByCredential: Record<number, RecoveryDisplay | undefined>
   statsWindowSeconds: number
   availableCount: number
@@ -60,21 +57,14 @@ function credentialMeta(credential: HealthProblemCredentialDto): string {
         })
       "
       :meta="
-        items.length + modelCooldownCredentials.length > 0
-          ? t('monitor.health.problems.count', {
-              count: n(
-                new Set([
-                  ...items.map((item) => item.credential.credential_id),
-                  ...modelCooldownCredentials.map((item) => item.credential_id),
-                ]).size,
-              ),
-            })
+        items.length > 0
+          ? t('monitor.health.problems.count', { count: n(items.length) })
           : undefined
       "
     />
 
     <div
-      v-if="items.length === 0 && modelCooldownCredentials.length === 0"
+      v-if="items.length === 0"
       class="problem-health__clear-panel"
       :class="{ 'problem-health__clear-panel--inactive': availableCount === 0 }"
       role="status"
@@ -305,48 +295,10 @@ function credentialMeta(credential: HealthProblemCredentialDto): string {
         </article>
       </template>
     </LedgerRecordList>
-    <div v-if="modelCooldownCredentials.length > 0" class="problem-health__models">
-      <details v-for="credential in modelCooldownCredentials" :key="credential.credential_id">
-        <summary>
-          <RouterLink
-            :to="
-              groupDetailLocation(credential.group_id, {
-                tab: 'credentials',
-                model_cooldown: 'true',
-              })
-            "
-            >{{ credential.group_name }} · {{ credential.identity }}</RouterLink
-          >
-          <StatusBadge tone="warning" size="compact">{{
-            t('group.credentials.modelCooldown.count', {
-              count: n(credential.model_cooldowns.length),
-            })
-          }}</StatusBadge>
-        </summary>
-        <ModelCooldownDetails :cooldowns="credential.model_cooldowns" />
-      </details>
-    </div>
   </section>
 </template>
 
 <style scoped>
-.problem-health__models {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  max-height: 320px;
-  overflow: auto;
-}
-.problem-health__models summary {
-  cursor: pointer;
-  margin-bottom: var(--space-2);
-  overflow-wrap: anywhere;
-  font-size: var(--text-label-xs);
-}
-.problem-health__models summary a {
-  color: var(--color-text);
-  margin-right: var(--space-2);
-}
 .problem-health {
   display: grid;
   min-width: 0;

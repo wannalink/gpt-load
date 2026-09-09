@@ -13,20 +13,19 @@ import {
 import AppButton from './AppButton.vue'
 import AppPopover from './AppPopover.vue'
 import FormField from './FormField.vue'
-import OverflowTooltip from './OverflowTooltip.vue'
 
 const props = defineProps<{
   from: string
   to: string
   appliedFrom?: string
   appliedTo?: string
+  appliedPreset?: DateTimePreset
   label: string
   fromLabel: string
   toLabel: string
   fromError?: string
   toError?: string
   preset?: DateTimePreset
-  rollingEndOffsetMs?: number
   applyLabel?: string
   applyDisabled?: boolean
 }>()
@@ -42,10 +41,18 @@ const { t } = useI18n()
 const open = ref(false)
 const fieldID = useId()
 
-const display = computed(
+const rangeDisplay = computed(
   () =>
     `${displayValue(props.appliedFrom ?? props.from)} → ${displayValue(props.appliedTo ?? props.to)}`,
 )
+const display = computed(() => {
+  const preset = props.appliedPreset
+  if (!preset) return rangeDisplay.value
+  if (preset === 'today' || preset === 'yesterday') {
+    return t(`monitor.logs.filters.quick.${preset}`)
+  }
+  return t(`monitor.logs.filters.quickDisplay.${preset}`)
+})
 
 function changeOpen(value: boolean): void {
   open.value = value
@@ -74,7 +81,7 @@ function updateLocalInput(field: 'from' | 'to', value: string): void {
 
 function selectShortcut(preset: DateTimePreset): void {
   const now = Math.floor(Date.now() / 1000) * 1000
-  const range = resolveDateTimePreset(preset, now, props.rollingEndOffsetMs ?? 24 * 60 * 60 * 1000)
+  const range = resolveDateTimePreset(preset, now)
   emit('update:from', localDateTimeInput(range.from_ms))
   emit('update:to', localDateTimeInput(range.to_ms))
   emit('update:preset', preset)
@@ -84,6 +91,7 @@ function selectShortcut(preset: DateTimePreset): void {
 
 function apply(): void {
   if (props.applyDisabled) return
+  emit('update:preset', undefined)
   emit('apply')
   open.value = false
 }
@@ -103,14 +111,13 @@ function apply(): void {
     <template #trigger>
       <AppButton
         class="app-date-range__trigger"
+        :class="{ 'app-date-range__trigger--custom': !appliedPreset }"
         variant="secondary"
         size="compact"
-        :aria-label="label"
+        :aria-label="`${label}: ${display}`"
       >
         <CalendarClock :size="14" aria-hidden="true" />
-        <OverflowTooltip as="span" :content="display" :focusable="false">
-          {{ display }}
-        </OverflowTooltip>
+        <span>{{ display }}</span>
       </AppButton>
     </template>
 
@@ -192,12 +199,16 @@ function apply(): void {
 
 .app-date-range__trigger > span {
   overflow: hidden;
-  font-family: var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.app-date-range__trigger--custom > span {
+  font-family: var(--font-mono);
+}
+
 .app-date-range-popover {
+  --date-range-control-height: var(--control-xs);
   width: min(420px, var(--reka-popover-content-available-width));
   padding: 14px;
 }
@@ -230,12 +241,14 @@ function apply(): void {
 }
 
 .app-date-range__end-controls .app-date-range__apply {
-  min-height: var(--control-xs);
+  min-height: var(--date-range-control-height);
+  height: var(--date-range-control-height);
 }
 
 .app-date-range__fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 10px;
   padding-top: 12px;
 }
@@ -269,7 +282,8 @@ function apply(): void {
   display: flex;
   width: 100%;
   min-width: 0;
-  min-height: var(--control-xs);
+  min-height: var(--date-range-control-height);
+  height: var(--date-range-control-height);
   align-items: center;
   overflow: hidden;
   border: 1px solid var(--color-border-control);
@@ -278,22 +292,11 @@ function apply(): void {
   color: var(--color-text);
 }
 
-.app-date-range__input-value {
-  min-width: 0;
-  overflow: hidden;
-  padding: 0 10px;
-  font-family: var(--font-mono);
-  font-size: var(--text-meta);
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .app-date-range__native-input {
   position: static !important;
   width: 100% !important;
-  height: var(--control-xs) !important;
-  min-height: var(--control-xs) !important;
+  height: 100% !important;
+  min-height: 0 !important;
   border: 0 !important;
   border-radius: inherit !important;
   background: transparent !important;
@@ -312,6 +315,10 @@ function apply(): void {
 }
 
 @media (max-width: 560px) {
+  .app-date-range-popover {
+    --date-range-control-height: var(--touch-target);
+  }
+
   .app-date-range__trigger {
     width: 100%;
     max-width: none;
