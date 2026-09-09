@@ -8,7 +8,7 @@ import (
 )
 
 // GeminiFreeTierQuotaCooldown is the forced cooldown duration for a key that exceeds the free tier request quota.
-const GeminiFreeTierQuotaCooldown = 5 * time.Minute
+const GeminiFreeTierQuotaCooldown = 10 * time.Minute
 
 // GeminiFreeTierQuotaMetric is the specific metric string returned in the Gemini 429 error.
 const GeminiFreeTierQuotaMetric = "generativelanguage.googleapis.com/generate_content_free_tier_requests"
@@ -18,7 +18,7 @@ const GeminiFreeTierQuotaErrorSubstring = "quota exceeded for metric: generative
 
 // geminiFreeTierQuotaDecision inspects the execution attempt for Gemini's free tier quota error
 // ("Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit:")
-// and returns a Decision forcing a 5-minute credential cooldown using the app's built-in cooldown mechanism.
+// and returns a Decision forcing a 10-minute credential cooldown using the app's built-in cooldown mechanism.
 func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 	if attempt.Evidence == nil {
 		return Decision{}, false
