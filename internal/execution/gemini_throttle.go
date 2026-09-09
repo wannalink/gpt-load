@@ -2,9 +2,7 @@ package execution
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,23 +27,53 @@ func isGeminiThrottledTarget(spec AttemptSpec) bool {
 	return channelID == "gemini"
 }
 
-// isResourceExhausted detects Gemini's resource exhaustion response: HTTP 429 with
-// "Resource has been exhausted (e.g. check quota)." in body or error summary.
-func isResourceExhausted(statusCode int, body []byte, summary string) bool {
-	if statusCode != http.StatusTooManyRequests {
-		return false
-	}
-	marker := "resource has been exhausted"
-	if len(body) > 0 && strings.Contains(strings.ToLower(string(body)), marker) {
+// isResourceExhausted detects whether an attempt failed due to Gemini rate limiting or quota exhaustion:
+// HTTP 429 Too Many Requests, FailureHintRateLimited, or error body/summary containing exhaustion markers.
+func isResourceExhausted(statusCode int, body []byte, evidence *ErrorEvidence) bool {
+	if statusCode == http.StatusTooManyRequests {
 		return true
 	}
-	if summary != "" && strings.Contains(strings.ToLower(summary), marker) {
-		return true
+	if evidence != nil {
+		if evidence.StatusCode == http.StatusTooManyRequests || evidence.Hint == FailureHintRateLimited {
+			return true
+		}
+		summary := strings.ToLower(evidence.Summary)
+		code := strings.ToLower(evidence.Code)
+		typeVal := strings.ToLower(evidence.Type)
+		for _, marker := range []string{
+			"resource_exhausted",
+			"resource has been exhausted",
+			"quota_exceeded",
+			"quota exceeded",
+			"rate_limit",
+			"rate limit",
+			"too_many_requests",
+			"429",
+		} {
+			if strings.Contains(summary, marker) || strings.Contains(code, marker) || strings.Contains(typeVal, marker) {
+				return true
+			}
+		}
+	}
+	if len(body) > 0 {
+		lowerBody := strings.ToLower(string(body))
+		for _, marker := range []string{
+			"resource_exhausted",
+			"resource has been exhausted",
+			"quota_exceeded",
+			"quota exceeded",
+			"rate_limit",
+			"rate limit",
+		} {
+			if strings.Contains(lowerBody, marker) {
+				return true
+			}
+		}
 	}
 	return false
 }
 
-// geminiRateLimitState tracks the sliding rate-limiting window and request count for a single Gemini credential.
+// geminiRateLimitState tracks the sliding rate-limiting window and request count for a single Gemini channel.
 type geminiRateLimitState struct {
 	mu           sync.Mutex
 	windowStart  time.Time
@@ -115,9 +143,13 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 
 	if isThrottled {
 		if d := windowStart.Add(GeminiThrottleWindow).Sub(now); d > 0 {
+			log.Printf("[gemini-throttle] throttle active (count=%d, throttled=%v): pausing request for %v (window started at %v)",
+				s.requestCount, s.throttled, d, windowStart.Format(time.RFC3339))
 			if err := s.sleep(ctx, d); err != nil {
+				log.Printf("[gemini-throttle] request canceled while waiting in throttle queue: %v", err)
 				return nil, err
 			}
+			log.Printf("[gemini-throttle] throttle window elapsed, resuming dispatch")
 		}
 
 		s.mu.Lock()
@@ -141,6 +173,8 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 	s.mu.Lock()
 	s.requestCount++
 	if s.requestCount >= GeminiProactiveLimit {
+		log.Printf("[gemini-throttle] proactive limit reached (%d/%d requests in window): engaging proactive throttle for subsequent requests",
+			s.requestCount, GeminiProactiveLimit)
 		s.throttled = true
 	}
 	s.mu.Unlock()
@@ -156,12 +190,12 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		if statusCode == 0 {
+		if statusCode == 0 && !hitExhaustion429 {
 			// Network error (Google API was NOT reached at all):
 			// revert the requestCount increment.
 			if s.requestCount > 0 {
 				s.requestCount--
-				if s.requestCount < GeminiProactiveLimit && !hitExhaustion429 {
+				if s.requestCount < GeminiProactiveLimit {
 					s.throttled = false
 				}
 			}
@@ -178,13 +212,14 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 
 		if hitExhaustion429 {
 			// Reactive safety net triggered
+			log.Printf("[gemini-throttle] 429 quota exhaustion detected (status=%d): engaging reactive throttle latch for window", statusCode)
 			s.throttled = true
 		}
 	}
 	return release, nil
 }
 
-// GeminiThrottleRegistry manages rate-limiting states per credential.
+// GeminiThrottleRegistry manages rate-limiting states per channel.
 type GeminiThrottleRegistry struct {
 	mu     sync.Mutex
 	states map[string]*geminiRateLimitState
@@ -198,7 +233,7 @@ func NewGeminiThrottleRegistry() *GeminiThrottleRegistry {
 }
 
 func (r *GeminiThrottleRegistry) getState(spec AttemptSpec) *geminiRateLimitState {
-	key := credentialKey(spec)
+	key := channelKey(spec)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	state, exists := r.states[key]
@@ -209,16 +244,8 @@ func (r *GeminiThrottleRegistry) getState(spec AttemptSpec) *geminiRateLimitStat
 	return state
 }
 
-func credentialKey(spec AttemptSpec) string {
-	if spec.Credential.ID != 0 {
-		return fmt.Sprintf("%s:%d", spec.ChannelID, spec.Credential.ID)
-	}
-	data := spec.Credential.Data()
-	if len(data) > 0 {
-		hash := sha256.Sum256(data)
-		return fmt.Sprintf("%s:%s", spec.ChannelID, hex.EncodeToString(hash[:8]))
-	}
-	return spec.ChannelID
+func channelKey(spec AttemptSpec) string {
+	return strings.ToLower(strings.TrimSpace(spec.ChannelID))
 }
 
 // GeminiThrottledExecutor wraps an execution.Executor and enforces proactive rate limiting
@@ -271,19 +298,19 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 
 	result := e.inner.Execute(ctx, spec)
 
+	hitExhaustion := isResourceExhausted(result.StatusCode, result.Body, result.Error)
 	statusCode := result.StatusCode
-	if statusCode == 0 && result.DispatchState == DispatchNotSent {
+	if statusCode == 0 && result.Error != nil && result.Error.StatusCode != 0 {
+		statusCode = result.Error.StatusCode
+	}
+	if hitExhaustion && statusCode == 0 {
+		statusCode = http.StatusTooManyRequests
+	} else if statusCode == 0 && result.DispatchState == DispatchNotSent {
 		release(0, false)
 		return result
 	}
 
-	summary := ""
-	if result.Error != nil {
-		summary = result.Error.Summary
-	}
-	hitExhaustion := isResourceExhausted(statusCode, result.Body, summary)
 	release(statusCode, hitExhaustion)
-
 	return result
 }
 
@@ -322,22 +349,19 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 
 	result := e.inner.ExecuteStream(ctx, spec, sink)
 
+	hitExhaustion := isResourceExhausted(result.StatusCode, nil, result.Error)
 	statusCode := result.StatusCode
 	if statusCode == 0 && result.Error != nil && result.Error.StatusCode != 0 {
 		statusCode = result.Error.StatusCode
 	}
-	if statusCode == 0 && result.DispatchState == DispatchNotSent {
+	if hitExhaustion && statusCode == 0 {
+		statusCode = http.StatusTooManyRequests
+	} else if statusCode == 0 && result.DispatchState == DispatchNotSent {
 		release(0, false)
 		return result
 	}
 
-	summary := ""
-	if result.Error != nil {
-		summary = result.Error.Summary
-	}
-	hitExhaustion := isResourceExhausted(statusCode, nil, summary)
 	release(statusCode, hitExhaustion)
-
 	return result
 }
 

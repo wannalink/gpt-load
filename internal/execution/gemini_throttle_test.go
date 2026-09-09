@@ -3,7 +3,6 @@ package execution
 import (
 	"context"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,38 +61,49 @@ func TestIsResourceExhausted(t *testing.T) {
 		name       string
 		statusCode int
 		body       []byte
-		summary    string
+		evidence   *ErrorEvidence
 		expected   bool
 	}{
 		{
-			name:       "exact 429 with body",
+			name:       "exact 429 status",
 			statusCode: http.StatusTooManyRequests,
+			expected:   true,
+		},
+		{
+			name:       "429 in evidence status code",
+			statusCode: 0,
+			evidence:   &ErrorEvidence{StatusCode: http.StatusTooManyRequests},
+			expected:   true,
+		},
+		{
+			name:       "rate limit hint in evidence",
+			statusCode: 0,
+			evidence:   &ErrorEvidence{Hint: FailureHintRateLimited},
+			expected:   true,
+		},
+		{
+			name:       "quota exceeded in error summary",
+			statusCode: 0,
+			evidence:   &ErrorEvidence{Summary: "upstream quota exceeded for project"},
+			expected:   true,
+		},
+		{
+			name:       "resource exhausted in body",
+			statusCode: 0,
 			body:       []byte(`{"error":{"message":"Resource has been exhausted (e.g. check quota)."}}`),
 			expected:   true,
 		},
 		{
-			name:       "429 with summary",
-			statusCode: http.StatusTooManyRequests,
-			summary:    "upstream error: Resource has been exhausted (e.g. check quota).",
-			expected:   true,
-		},
-		{
-			name:       "429 other rate limit",
-			statusCode: http.StatusTooManyRequests,
-			body:       []byte(`{"error":{"message":"rate limit exceeded"}}`),
-			expected:   false,
-		},
-		{
-			name:       "200 ok with body",
+			name:       "200 ok without exhaustion",
 			statusCode: http.StatusOK,
-			body:       []byte(`Resource has been exhausted`),
+			body:       []byte(`{"candidates":[]}`),
 			expected:   false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := isResourceExhausted(tc.statusCode, tc.body, tc.summary)
+			actual := isResourceExhausted(tc.statusCode, tc.body, tc.evidence)
 			if actual != tc.expected {
 				t.Fatalf("expected isResourceExhausted = %v, got %v", tc.expected, actual)
 			}
@@ -249,45 +259,62 @@ func TestGeminiContextCancellation(t *testing.T) {
 	}
 }
 
-func TestGeminiPerCredentialIsolation(t *testing.T) {
+func TestGeminiChannelWideSharingAcrossKeys(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	registry := NewGeminiThrottleRegistry()
 
-	spec1 := AttemptSpec{
+	specKey1 := AttemptSpec{
 		ChannelID:  "gemini",
 		Credential: NewCredentialSnapshot(1, 1, 1, []byte("key-1")),
 	}
-	spec2 := AttemptSpec{
+	specKey2 := AttemptSpec{
 		ChannelID:  "gemini",
 		Credential: NewCredentialSnapshot(2, 1, 1, []byte("key-2")),
 	}
 
-	state1 := registry.getState(spec1)
-	state2 := registry.getState(spec2)
+	state1 := registry.getState(specKey1)
+	state2 := registry.getState(specKey2)
 
-	if state1 == state2 {
-		t.Fatalf("states for different credentials should be distinct")
+	if state1 != state2 {
+		t.Fatalf("all credentials in the gemini channel must share the same rate limit state")
 	}
 
-	// Quota on state1 does not affect state2
-	for i := 1; i <= GeminiProactiveLimit; i++ {
-		release, _ := state1.beforeSend(context.Background())
+	var sleepCalled bool
+	state1.nowFunc = func() time.Time { return currentTime }
+	state1.sleepFunc = func(ctx context.Context, d time.Duration) error {
+		sleepCalled = true
+		currentTime = currentTime.Add(d)
+		return nil
+	}
+
+	// Key 1 sends 10 requests
+	for i := 1; i <= 10; i++ {
+		release, err := state1.beforeSend(context.Background())
+		if err != nil {
+			t.Fatalf("key1 request %d failed: %v", i, err)
+		}
 		release(http.StatusOK, false)
 	}
 
-	state1.mu.Lock()
-	throttled1 := state1.throttled
-	state1.mu.Unlock()
-	if !throttled1 {
-		t.Fatalf("state1 should be throttled")
+	// Key 2 sends 10 requests (reaching 20 total for the channel)
+	for i := 1; i <= 10; i++ {
+		release, err := state2.beforeSend(context.Background())
+		if err != nil {
+			t.Fatalf("key2 request %d failed: %v", i, err)
+		}
+		release(http.StatusOK, false)
 	}
 
-	state2.mu.Lock()
-	throttled2 := state2.throttled
-	count2 := state2.requestCount
-	state2.mu.Unlock()
-	if throttled2 || count2 != 0 {
-		t.Fatalf("state2 should not be throttled and count should be 0, got throttled=%v, count=%d", throttled2, count2)
+	// 21st request from Key 1 or Key 2 must sleep
+	sleepCalled = false
+	releaseNext, err := state1.beforeSend(context.Background())
+	if err != nil {
+		t.Fatalf("21st request failed: %v", err)
 	}
+	if !sleepCalled {
+		t.Fatalf("21st request across keys should have paused")
+	}
+	releaseNext(http.StatusOK, false)
 }
 
 type fakeExecutor struct {
