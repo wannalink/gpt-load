@@ -1,5 +1,13 @@
 export default {
   common: {
+    upstreamUrl: {
+      label: '自定义上游地址',
+      default: '默认使用渠道官方地址。',
+      defaults: '默认地址：{urls}',
+      subscriptionHelp:
+        '填写 HTTPS 根地址，可带路径前缀；上游需支持渠道业务 API，系统会追加原生接口路径。OAuth 授权仍使用官方地址。',
+      invalid: '请输入有效的 {protocol} 上游地址，不含用户名、密码、查询参数或 # 片段',
+    },
     priceMultiplier: {
       label: '价格倍率',
       value: '倍率 ×{value}',
@@ -17,7 +25,12 @@ export default {
     copy: '复制',
     copied: '已复制',
     copyFailed: '复制失败',
-    copyUnsupported: '当前环境不支持复制，请使用 HTTPS',
+    copyFallback: {
+      title: '复制内容',
+      description: '自动复制未成功，请再次点击复制，或选中下方内容手动复制。',
+      valueLabel: '待复制内容',
+      failed: '复制仍未成功，请选中上方内容手动复制。',
+    },
     pagination: {
       label: '分页',
       total: '共 {total} 条',

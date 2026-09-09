@@ -1,5 +1,14 @@
 export default {
   common: {
+    upstreamUrl: {
+      label: 'Custom upstream URL',
+      default: 'Uses the channel’s official URL by default.',
+      defaults: 'Default URL: {urls}',
+      subscriptionHelp:
+        'Enter an HTTPS root URL with an optional path prefix. The upstream must support the channel’s business APIs; native API paths are appended automatically. OAuth uses official URLs.',
+      invalid:
+        'Enter a valid {protocol} upstream URL without credentials, query parameters, or a fragment',
+    },
     priceMultiplier: {
       label: 'Price multiplier',
       value: 'Multiplier ×{value}',
@@ -18,7 +27,13 @@ export default {
     copy: 'Copy',
     copied: 'Copied',
     copyFailed: 'Copy failed',
-    copyUnsupported: 'Copy is unavailable. Use HTTPS.',
+    copyFallback: {
+      title: 'Copy content',
+      description:
+        'Automatic copying failed. Try Copy again, or select the content below to copy it manually.',
+      valueLabel: 'Content to copy',
+      failed: 'Copying still failed. Select the content above to copy it manually.',
+    },
     pagination: {
       label: 'Pagination',
       total: 'Total: {total}',

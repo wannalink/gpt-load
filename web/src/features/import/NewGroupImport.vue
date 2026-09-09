@@ -40,7 +40,7 @@ import StickySaveBar from '@/components/ui/StickySaveBar.vue'
 import ModelAliasEditor from '@/features/models/ModelAliasEditor.vue'
 import ModelDiscoveryDrawer from '@/features/models/ModelDiscoveryDrawer.vue'
 import { presentSubscriptionErrorKey } from '@/features/subscription-error-presenter'
-import { isValidUpstreamBaseURL } from '@/lib/upstream-base-url'
+import { isValidSubscriptionBaseURL, isValidUpstreamBaseURL } from '@/lib/upstream-base-url'
 import {
   appendSelectedCandidates,
   findModelNameConflicts,
@@ -172,6 +172,7 @@ const conflict = ref<SameTargetConflictData | null>(
 )
 const serverModelConflicts = ref<ModelNameConflict[]>([])
 const completed = ref(false)
+const subscriptionImportState = ref({ busy: false, hasResults: false })
 if (createOperation.outcome.value?.kind === 'confirmed') createOperation.reset()
 if (appendOperation.outcome.value?.kind === 'confirmed') appendOperation.reset()
 if (connectOperation.outcome.value?.kind === 'confirmed') connectOperation.reset()
@@ -298,12 +299,24 @@ const allParamErrors = computed<Record<string, string>>(() => {
   if (!channel) return errors
   for (const field of channel.param_fields) {
     const value = draft.params[field.key]?.trim() ?? ''
-    if ((field.required || (field.key === 'base_url' && baseUrlOverrideEnabled.value)) && !value) {
-      errors[field.key] = t('import.connection.paramRequired', { name: field.label })
+    const overrideRequired = field.key === 'base_url' && baseUrlOverrideEnabled.value
+    if ((field.required || overrideRequired) && !value) {
+      errors[field.key] = t('import.connection.paramRequired', {
+        name: field.key === 'base_url' ? t('common.upstreamUrl.label') : field.label,
+      })
       continue
     }
-    if (field.input_kind === 'url' && value && !isValidUpstreamBaseURL(value)) {
-      errors[field.key] = t('import.connection.urlError')
+    if (field.input_kind === 'url' && value) {
+      const subscriptionBaseURL =
+        channel.connection.type === 'subscription' && field.key === 'base_url'
+      const valid = subscriptionBaseURL
+        ? isValidSubscriptionBaseURL(value)
+        : isValidUpstreamBaseURL(value)
+      if (!valid) {
+        errors[field.key] = t('common.upstreamUrl.invalid', {
+          protocol: subscriptionBaseURL ? 'HTTPS' : 'HTTP(S)',
+        })
+      }
     }
   }
   return errors
@@ -354,6 +367,7 @@ const submissionErrorMessage = computed(
 )
 const submitBlockedReason = computed(() => {
   if (payloadLocked.value || mutationPending.value) return ''
+  if (subscriptionImportState.value.busy) return t('import.subscription.importing')
   if (!isValidPriceMultiplier(draft.price_multiplier)) return t('common.priceMultiplier.invalid')
   if (paramsError.value) {
     if (selectedChannel.value === null) return t('import.presets.channelRequired')
@@ -375,6 +389,7 @@ const canDiscover = computed(
   () =>
     selectedChannel.value?.capabilities.model_discovery === true &&
     !payloadLocked.value &&
+    !subscriptionImportState.value.busy &&
     !paramsError.value &&
     credentialCount.value > 0 &&
     (draft.connection_type === 'subscription' || !credentialAnalysis.value.tooManyCredentials),
@@ -383,6 +398,7 @@ const canCreate = computed(
   () =>
     !payloadLocked.value &&
     !mutationPending.value &&
+    !subscriptionImportState.value.busy &&
     isValidPriceMultiplier(draft.price_multiplier) &&
     !paramsError.value &&
     credentialCount.value > 0 &&
@@ -474,6 +490,7 @@ const credentialStepDescription = computed(() => {
   )
 })
 const credentialStepSummary = computed(() => {
+  if (subscriptionImportState.value.busy) return t('import.subscription.importing')
   if (!isSubscription.value && credentialAnalysis.value.tooManyCredentials) {
     return t('import.credentials.tooMany')
   }
@@ -1310,6 +1327,7 @@ onBeforeUnmount(() => {
             :entry-disabled="draftProxyMutation === undefined"
             hide-header
             compact
+            @import-state="subscriptionImportState = $event"
           />
           <CredentialTextarea
             v-else

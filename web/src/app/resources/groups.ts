@@ -101,7 +101,14 @@ const groupOptionFields = [
   'enabled',
   'models',
 ] as const
-const credentialCountFields = ['total', 'available', 'cooldown', 'blacklisted', 'disabled'] as const
+const credentialCountFields = [
+  'model_cooldown',
+  'total',
+  'available',
+  'cooldown',
+  'blacklisted',
+  'disabled',
+] as const
 const groupCollectionStatuses = ['available', 'unavailable', 'disabled'] as const
 const groupUnavailableReasons = ['no_available_credentials', 'no_models'] as const
 const connectionTypes = ['api_key', 'subscription'] as const
@@ -109,7 +116,6 @@ const runtimeSettingFields = [
   'first_byte_timeout',
   'request_timeout',
   'stream_idle_timeout',
-  'retry_count',
   'blacklist_threshold',
   'header_rules',
   'affinity_enabled',
@@ -125,7 +131,6 @@ export interface GroupRuntimeConfigDto {
   first_byte_timeout?: number
   request_timeout?: number
   stream_idle_timeout?: number
-  retry_count?: number
   blacklist_threshold?: number
   header_rules?: HeaderRulesDto
   affinity_enabled?: boolean
@@ -136,7 +141,6 @@ export interface GroupEffectiveConfigDto {
   first_byte_timeout: number
   request_timeout: number
   stream_idle_timeout: number
-  retry_count: number
   blacklist_threshold: number
   header_rules: HeaderRulesDto
   affinity_enabled: boolean
@@ -355,10 +359,8 @@ function projectRuntimeConfig(
       result[field] = projectSafeInteger(record[field], { minimum: 1 })
     }
   }
-  for (const field of ['retry_count', 'blacklist_threshold'] as const) {
-    if (complete || Object.prototype.hasOwnProperty.call(record, field)) {
-      result[field] = projectSafeInteger(record[field], { minimum: 0 })
-    }
+  if (complete || Object.prototype.hasOwnProperty.call(record, 'blacklist_threshold')) {
+    result.blacklist_threshold = projectSafeInteger(record.blacklist_threshold, { minimum: 0 })
   }
   if (complete || Object.prototype.hasOwnProperty.call(record, 'header_rules')) {
     result.header_rules = projectHeaderRules(record.header_rules)
@@ -465,10 +467,14 @@ function projectCredentialCounts(value: unknown): CredentialCounts {
     total: projectSafeInteger(record.total, { minimum: 0 }),
     available: projectSafeInteger(record.available, { minimum: 0 }),
     cooldown: projectSafeInteger(record.cooldown, { minimum: 0 }),
+    model_cooldown: projectSafeInteger(record.model_cooldown, { minimum: 0 }),
     blacklisted: projectSafeInteger(record.blacklisted, { minimum: 0 }),
     disabled: projectSafeInteger(record.disabled, { minimum: 0 }),
   }
-  if (result.total !== result.available + result.cooldown + result.blacklisted + result.disabled) {
+  if (
+    result.total !== result.available + result.cooldown + result.blacklisted + result.disabled ||
+    result.model_cooldown > result.total
+  ) {
     throw new InvalidResponseError()
   }
   return result

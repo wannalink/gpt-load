@@ -80,6 +80,8 @@ export default {
     backToGroups: 'Back to Groups',
     importCredentials: 'Import channel credentials',
     copyUpstreamUrl: 'Copy upstream address {url}',
+    upstreamUrlCustom: 'Custom',
+    upstreamUrlOfficialDefault: 'Official default',
     copySuccess: 'Copied',
     copyFailure: 'Copy failed',
     modelEditor: {
@@ -319,11 +321,8 @@ export default {
         title: 'Runtime overrides',
         description: 'Inherited values follow global settings. Group overrides remain sparse.',
         first_byte_timeout: 'Native response / stream first-event timeout',
-        request_timeout: 'Request timeout',
+        request_timeout: 'Upstream request timeout per attempt',
         stream_idle_timeout: 'Stream-idle timeout',
-        retry_count: 'Extra retry count',
-        retryCountHelp:
-          'Maximum extra retries after the initial upstream attempt; 0 disables retries.',
         blacklist_threshold: 'Consecutive-failure blacklist threshold',
         blacklistThresholdHelp:
           'A credential is blacklisted after this many consecutive failures; 0 disables automatic blacklisting.',
@@ -377,6 +376,13 @@ export default {
       settings: 'Settings',
     },
     credentials: {
+      modelCooldown: {
+        label: 'Model cooldown',
+        count: 'Model cooldown · {count}',
+        credentialCount: 'Model cooldown · {count} credentials',
+        until: 'Available after',
+        hint: 'Only the affected models are limited; credential status is shown separately.',
+      },
       title: 'Keys',
       description: 'Review status, scheduling weight, and recent results',
       add: 'Add key',
@@ -698,7 +704,7 @@ export default {
         confirmDescription:
           'This affects all {kind} in the current Group, regardless of search, filters, or pagination.',
         restoreDescription:
-          'Restore only this Group’s {kind} that are in cooldown or blacklisted, and clear their consecutive failures. Disabled credentials and those whose authorization is not ready remain unchanged. Historical statistics are preserved. This does not test the upstream, reset quotas, or reauthorize accounts, and applies regardless of search, filters, or pagination.',
+          'Clear all model cooldowns for this Group’s {kind} and restore eligible credentials in cooldown or on the blacklist. Keep enabled and authorization states and historical statistics. Upstream quotas are unchanged. Applies across all search results, filters, and pages.',
         confirm: {
           download: 'Download all',
           enable: 'Enable all',

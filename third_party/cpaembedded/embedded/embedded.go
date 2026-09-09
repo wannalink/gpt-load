@@ -142,14 +142,16 @@ type HTTPExecutor interface {
 }
 
 type ExecuteRequest struct {
-	AttemptID            string
-	Model                string
-	Payload              []byte
-	Format               string
-	RequestPath          string
-	Headers              http.Header
-	OriginalRequest      []byte
-	ContinuityKey        string
+	AttemptID       string
+	Model           string
+	Payload         []byte
+	Format          string
+	RequestPath     string
+	Headers         http.Header
+	OriginalRequest []byte
+	ContinuityKey   string
+	// BaseURL 是可选的订阅 API 代理根地址，原生路径由渠道解析。
+	BaseURL              string
 	ProxyURL             string
 	ProxyFromEnvironment bool
 }
@@ -383,9 +385,15 @@ func NewCodexHTTPExecutor() *CodexHTTPExecutor {
 
 func (e *CodexHTTPExecutor) Identifier() string { return ProviderCodex }
 
+// ExecuteCanonical runs one unary Codex request through CPA's stateless HTTP
+// executor and captures request-path, reasoning, and quota observations.
 func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID string, credential CodexCredential, request ExecuteRequest) (ExecuteResponse, error) {
 	format := sdktranslator.FromString(request.Format)
-	auth := NewCodexAuth(credentialID, credential, "")
+	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
 	observation := newExecutionObservation(request)
 	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment)
@@ -394,6 +402,7 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	}, codexExecutionOptions(request, format, false))
 	if err != nil {
 		return ExecuteResponse{
+			Headers:                observation.responseHeaders(),
 			AppliedReasoningEffort: observation.reasoningEffort(),
 			UpstreamRequestPath:    observation.upstreamRequestPath(),
 			QuotaSignals:           observation.quotaSignalObservation(),
@@ -407,9 +416,15 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	}, nil
 }
 
+// CountTokensCanonical runs Codex token counting and normalizes Responses API
+// token-count payloads into the public response shape.
 func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credentialID string, credential CodexCredential, request ExecuteRequest) (ExecuteResponse, error) {
 	format := sdktranslator.FromString(request.Format)
-	auth := NewCodexAuth(credentialID, credential, "")
+	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
 	observation := newExecutionObservation(request)
 	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment)
@@ -462,9 +477,15 @@ func normalizeCodexResponsesTokenCount(payload []byte) ([]byte, error) {
 	})
 }
 
+// ExecuteStreamCanonical runs one streaming Codex request and forwards copied
+// chunks while retaining handshake and passive quota observations.
 func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credentialID string, credential CodexCredential, request ExecuteRequest) (*ExecuteStreamResponse, error) {
 	format := sdktranslator.FromString(request.Format)
-	auth := NewCodexAuth(credentialID, credential, "")
+	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
 	observation := newExecutionObservation(request)
 	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment)
@@ -473,6 +494,7 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	}, codexExecutionOptions(request, format, true))
 	if err != nil {
 		return &ExecuteStreamResponse{
+			Headers:                observation.responseHeaders(),
 			AppliedReasoningEffort: observation.reasoningEffort(),
 			UpstreamRequestPath:    observation.upstreamRequestPath(),
 			QuotaSignals:           observation.quotaSignalObservation(),
@@ -772,6 +794,7 @@ type executionObservation struct {
 	effort              string
 	observedRequestPath string
 	quota               cliproxyauth.QuotaState
+	retryAfter          string
 }
 
 func newExecutionObservation(request ExecuteRequest) *executionObservation {
@@ -855,8 +878,23 @@ func (o *executionObservation) observeQuotaSignals(header http.Header, observedA
 		return
 	}
 	o.mu.Lock()
+	// 恢复证据始终属于当前 HTTP 响应，缺失时不能沿用上一次请求的值。
+	o.retryAfter = ""
+	if value := header.Get("Retry-After"); len(value) <= 128 && !strings.ContainsAny(value, "\r\n") {
+		o.retryAfter = value
+	}
 	o.quota.ObserveResponseHeadersForProvider(o.provider, header, observedAt)
 	o.mu.Unlock()
+}
+
+func (o *executionObservation) responseHeaders() http.Header {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	header := make(http.Header)
+	if o.retryAfter != "" {
+		header.Set("Retry-After", o.retryAfter)
+	}
+	return header
 }
 
 func (o *executionObservation) quotaSignalObservation() QuotaSignalObservation {

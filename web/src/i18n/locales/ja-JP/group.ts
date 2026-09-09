@@ -80,6 +80,8 @@ export default {
     backToGroups: 'グループ一覧に戻る',
     importCredentials: 'チャネル認証情報をインポート',
     copyUpstreamUrl: 'アップストリームアドレス {url} をコピー',
+    upstreamUrlCustom: 'カスタム',
+    upstreamUrlOfficialDefault: '公式デフォルト',
     copySuccess: 'コピーしました',
     copyFailure: 'コピーできませんでした',
     modelEditor: {
@@ -319,10 +321,8 @@ export default {
         title: 'ランタイム上書き',
         description: '継承値はグローバル設定に従い、グループ上書きは疎なまま保持されます。',
         first_byte_timeout: 'ネイティブ応答 / ストリーム初回イベントのタイムアウト',
-        request_timeout: 'リクエストタイムアウト',
+        request_timeout: '上流リクエスト1回あたりのタイムアウト',
         stream_idle_timeout: 'ストリームアイドルタイムアウト',
-        retry_count: '追加再試行回数',
-        retryCountHelp: '最初の上流試行後に追加する再試行の上限です。0 で再試行を無効化します。',
         blacklist_threshold: '連続失敗のブラックリストしきい値',
         blacklistThresholdHelp:
           'この連続失敗回数に達すると認証情報をブラックリストへ登録します。0 で自動登録を無効化します。',
@@ -377,6 +377,13 @@ export default {
       settings: '設定',
     },
     credentials: {
+      modelCooldown: {
+        label: 'モデルクールダウン',
+        count: 'モデルクールダウン · {count}',
+        credentialCount: 'モデルクールダウン · {count} 件の認証情報',
+        until: '復帰時刻',
+        hint: '対象モデルのみが制限され、認証情報の基本状態は別に表示されます。',
+      },
       title: 'キー',
       description: '状態、スケジュールウェイト、最近の結果を確認します',
       add: 'キーを追加',
@@ -704,7 +711,7 @@ export default {
         confirmDescription:
           '検索、フィルター、ページに関係なく、現在のグループにあるすべての{kind}が対象です。',
         restoreDescription:
-          '現在のグループでクールダウン中またはブラックリストに登録されている{kind}のみを復旧し、その連続失敗状態をクリアします。無効化されている認証情報と認証が準備できていない項目は変更しません。過去の統計は保持します。上流のテスト、クォータのリセット、再認証は行いません。検索、フィルター、ページに関係なく適用されます。',
+          '現在のグループの全{kind}のモデルクールダウンを解除し、認証情報のクールダウンまたはブラックリスト状態にある復旧可能な項目を復旧します。有効・無効、認証状態、過去の統計、上流クォータは維持されます。検索、フィルター、ページに関係なく適用されます。',
         confirm: {
           download: 'すべてダウンロード',
           enable: 'すべて有効化',

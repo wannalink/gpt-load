@@ -147,6 +147,7 @@ const costAmountLabel = computed(() => {
 watch(
   () => props.requestId,
   () => {
+    copyControllers.abortAll()
     errorMessageExpanded.value = false
     expandedAttemptErrorMessages.value = new Set()
   },
@@ -479,7 +480,8 @@ function toggleAttemptErrorMessage(sequence: number): void {
                 appearance="plain"
               />
               <CopyChip
-                v-if="log.credential_name"
+                v-if="open && log.credential_name"
+                :key="`${requestId}:${log.group_id}:${log.credential_id}`"
                 layout="icon"
                 :value="log.credential_name"
                 :label="t('monitor.logs.drawer.copyCredential')"
@@ -729,6 +731,10 @@ function toggleAttemptErrorMessage(sequence: number): void {
               <div v-if="attempt.retry_directive">
                 <dt>{{ t('monitor.logs.drawer.retryDirective') }}</dt>
                 <dd>{{ t(`monitor.logs.retryDirective.${attempt.retry_directive}`) }}</dd>
+              </div>
+              <div v-if="attempt.cooldown_until_ms !== null">
+                <dt>{{ t('group.credentials.modelCooldown.until') }}</dt>
+                <dd><AppDateTime :instant="attempt.cooldown_until_ms" :locale="locale" /></dd>
               </div>
               <div v-if="attempt.effect">
                 <dt>{{ t('monitor.logs.drawer.effect') }}</dt>

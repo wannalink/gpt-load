@@ -137,7 +137,6 @@ type GroupView struct {
 	Models             []ModelConfig
 	Timeouts           TimeoutConfig
 	HeaderRules        HeaderRules
-	RetryCount         int
 	BlacklistThreshold int
 	AffinityEnabled    bool
 	WeightManual       *int
@@ -146,10 +145,12 @@ type GroupView struct {
 }
 
 type GroupCatalogView struct {
-	ID           uint
-	Name         string
-	Enabled      bool
-	WeightManual *int
+	ID             uint
+	Name           string
+	ChannelID      channel.ID
+	ConnectionType string
+	Enabled        bool
+	WeightManual   *int
 }
 
 type AccessKeyView struct {
@@ -204,7 +205,9 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 	for _, group := range input.Groups {
 		catalogView := GroupCatalogView{
 			ID: group.ID, Name: group.Name, Enabled: group.Enabled,
-			WeightManual: cloneWeight(group.WeightManual),
+			ChannelID:      group.ChannelID,
+			ConnectionType: connection.Normalize(group.ConnectionType),
+			WeightManual:   cloneWeight(group.WeightManual),
 		}
 		snapshot.GroupCatalog[group.ID] = catalogView
 		if err := appendExecutionTargets(snapshot.ExecutionRouteCatalog, input.ChannelRegistry, group); err != nil {
@@ -230,7 +233,6 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 			Models:             append([]ModelConfig(nil), group.Models...),
 			Timeouts:           resolved.Timeouts,
 			HeaderRules:        resolved.HeaderRules,
-			RetryCount:         resolved.RetryCount,
 			BlacklistThreshold: resolved.BlacklistThreshold,
 			AffinityEnabled:    resolved.AffinityEnabled,
 			WeightManual:       cloneWeight(group.WeightManual),

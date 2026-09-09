@@ -79,6 +79,7 @@ type runtimeCredentialRegistry interface {
 	ActiveEncryptedCredentialDataIfMatch(ref state.CredentialRef) (string, bool)
 	SetCooldownWithChange(credentialID uint, until time.Time) (exists bool, changed bool)
 	SetCooldownWithChangeIfVersion(credentialID uint, expectedVersion uint64, until time.Time) (matched bool, changed bool)
+	SetModelCooldown(state.CredentialRef, string, time.Time, time.Time) (bool, bool)
 	IncrFailure(credentialID uint) (int, bool)
 	SetBlacklistedWithChange(credentialID uint) (exists bool, changed bool)
 	ClearFailure(credentialID uint) bool
@@ -243,37 +244,40 @@ type requestAccessQuotaAdmission struct {
 }
 
 func (handler *Handler) applyDecisionEffect(
-	credentialID uint,
+	ref state.CredentialRef,
 	decision health.Decision,
 	statusCode int,
 	attemptNow time.Time,
 ) {
 	defaults := state.DefaultRuntimeSettings()
 	handler.applyDecisionEffectWithBlacklistPolicy(
-		credentialID,
+		ref,
 		0,
 		decision,
 		statusCode,
 		attemptNow,
 		defaults.BlacklistThreshold,
+		"",
 	)
 }
 
 func (handler *Handler) applyGroupDecisionEffect(
 	group state.GroupView,
-	credentialID uint,
+	ref state.CredentialRef,
 	credentialVersion uint64,
 	decision health.Decision,
 	statusCode int,
 	attemptNow time.Time,
+	model string,
 ) {
 	handler.applyDecisionEffectWithBlacklistPolicy(
-		credentialID,
+		ref,
 		credentialVersion,
 		decision,
 		statusCode,
 		attemptNow,
 		group.BlacklistThreshold,
+		model,
 	)
 }
 
@@ -286,16 +290,30 @@ func refreshCooldownCredentialVersion(result UpstreamResult, credentialVersion u
 }
 
 func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
-	credentialID uint,
+	ref state.CredentialRef,
 	credentialVersion uint64,
 	decision health.Decision,
 	statusCode int,
 	attemptNow time.Time,
 	blacklistThreshold int,
+	model string,
 ) {
+	credentialID := ref.ID
 	switch decision.Effect {
+	case health.EffectCooldownModel:
+		handler.mutateCredentialForTarget(ref, func() {
+			accepted, changed := handler.registry.SetModelCooldown(ref, model, decision.CooldownUntil, attemptNow)
+			if accepted {
+				handler.stats.RecordProblem(credentialID, decision.Category, statusCode, attemptNow)
+			}
+			if changed {
+				utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
+					logrus.Fields{"event": "model_cooldown", "credential_id": credentialID, "model": model,
+						"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown")
+			}
+		})
 	case health.EffectCooldownCredential:
-		mutate := func() {
+		handler.mutateCredentialForTarget(ref, func() {
 			until := decision.CooldownUntil
 			exists, changed := false, false
 			if credentialVersion == 0 {
@@ -314,14 +332,9 @@ func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
 			if changed {
 				handler.logCredentialCooldown(credentialID, decision.Category, statusCode)
 			}
-		}
-		if handler.mutations == nil {
-			mutate()
-		} else {
-			handler.mutations.Do(credentialID, mutate)
-		}
+		})
 	case health.EffectRecordCredentialFailure:
-		handler.mutations.Do(credentialID, func() {
+		handler.mutateCredentialForTarget(ref, func() {
 			count, ok := handler.registry.IncrFailure(credentialID)
 			if !ok {
 				return
@@ -342,23 +355,39 @@ func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
 	}
 }
 
-func (handler *Handler) recordCredentialSuccess(credentialID uint, at time.Time) {
-	handler.mutations.Do(credentialID, func() {
-		if handler.registry.ClearFailure(credentialID) {
-			handler.stats.RecordSuccess(credentialID, at)
+func (handler *Handler) recordCredentialSuccess(ref state.CredentialRef, at time.Time) {
+	handler.mutateCredentialForTarget(ref, func() {
+		if handler.registry.ClearFailure(ref.ID) {
+			handler.stats.RecordSuccess(ref.ID, at)
 		}
 	})
 }
 
-func retryAttemptLimit(group state.GroupView) int {
-	if group.RetryCount <= 0 {
+func (handler *Handler) mutateCredentialForTarget(ref state.CredentialRef, mutate func()) {
+	apply := func() {
+		// 与配置变更共用凭据锁，避免校验后再切换目标；同目标的令牌刷新不影响结果归属。
+		current, exists := handler.registry.CredentialRef(ref.ID)
+		if !exists || current.GroupID != ref.GroupID || current.IdentityGeneration != ref.IdentityGeneration {
+			return
+		}
+		mutate()
+	}
+	if handler.mutations == nil {
+		apply()
+	} else {
+		handler.mutations.Do(ref.ID, apply)
+	}
+}
+
+func retryAttemptLimit(retryCount int) int {
+	if retryCount <= 0 {
 		return 1
 	}
 	maximum := int(^uint(0) >> 1)
-	if group.RetryCount >= maximum {
+	if retryCount >= maximum {
 		return maximum
 	}
-	return group.RetryCount + 1
+	return retryCount + 1
 }
 
 func (handler *Handler) Handle(ginContext *gin.Context) {
@@ -587,6 +616,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 	handler.executeAttempts(
 		ginContext,
 		iterator,
+		retryAttemptLimit(snapshot.Settings.RetryCount),
 		allowedCredentialRefs,
 		selectedDialect,
 		parsed,
@@ -758,6 +788,7 @@ func headerFieldValues(headers http.Header, name string) []string {
 func (handler *Handler) executeAttempts(
 	ginContext *gin.Context,
 	iterator *scheduler.Iterator,
+	forwardAttemptLimit int,
 	allowedCredentialRefs map[uint]state.CredentialRef,
 	selectedDialect dialect.Dialect,
 	parsed *dialect.ParsedRequest,
@@ -782,8 +813,6 @@ func (handler *Handler) executeAttempts(
 	lastAttemptIndex := -1
 	attemptSequence := 0
 	forwardAttempts := 0
-	forwardAttemptLimit := 1
-	retryPolicyResolved := false
 	type credentialRefreshRetry struct {
 		selection scheduler.Selection
 		ref       state.CredentialRef
@@ -918,7 +947,7 @@ func (handler *Handler) executeAttempts(
 			selection, nil, result, decision, attemptStarted, attemptCompleted,
 		)
 		lastAttemptIndex = recordedAttempt
-		handler.applyGroupDecisionEffect(selection.Group, selection.CredentialID, 0, decision, 0, attemptNow)
+		handler.applyGroupDecisionEffect(selection.Group, allowedCredentialRefs[selection.CredentialID], 0, decision, 0, attemptNow, optionalModelValue(selection.UpstreamModelID))
 		if decision.Effect == health.EffectSkipGroup {
 			iterator.SkipGroup(selection.GroupID)
 		}
@@ -1000,12 +1029,6 @@ func (handler *Handler) executeAttempts(
 		}
 		attemptObservations := prepared.observations
 		attemptObservationsAvailable := prepared.observationsAvailable
-		if !retryPolicyResolved {
-			// A request can fail over across Groups. Freeze the first active
-			// candidate's effective Group policy for the whole retry chain.
-			forwardAttemptLimit = retryAttemptLimit(selection.Group)
-			retryPolicyResolved = true
-		}
 		decryptedCredential, err := handler.encryption.Decrypt(encrypted)
 		if err != nil {
 			if !recordCandidatePreparationFailure(
@@ -1184,14 +1207,15 @@ func (handler *Handler) executeAttempts(
 			}
 			handler.applyGroupDecisionEffect(
 				selection.Group,
-				selection.CredentialID,
+				ref,
 				0,
 				decision,
 				result.StatusCode,
 				attemptNow,
+				optionalModelValue(selection.UpstreamModelID),
 			)
 			if stream && result.Stream.EndReason == StreamEndCleanEOF {
-				handler.recordCredentialSuccess(selection.CredentialID, attemptNow)
+				handler.recordCredentialSuccess(ref, attemptNow)
 				handler.recordAffinitySuccess(requestAffinity, selection, ref)
 			}
 			return
@@ -1208,13 +1232,16 @@ func (handler *Handler) executeAttempts(
 				)
 				recorder.completeCanceled(ginContext.Request.Context(), 0, recordedAttempt)
 			}
+			if decision.Effect == health.EffectCooldownModel {
+				handler.applyGroupDecisionEffect(selection.Group, ref, 0, decision, result.StatusCode, attemptNow, optionalModelValue(selection.UpstreamModelID))
+			}
 			return
 		}
 		if !stream && result.DispatchState != execution.DispatchLocal &&
 			!result.ProviderErrorBeforeCommit && result.HasResponse() &&
 			result.StatusCode >= http.StatusOK &&
 			result.StatusCode < http.StatusMultipleChoices {
-			handler.recordCredentialSuccess(selection.CredentialID, attemptNow)
+			handler.recordCredentialSuccess(ref, attemptNow)
 		}
 		recordedAttempt := recorder.recordAttempt(
 			selection, normalizedCredential.secrets, result, decision, attemptStarted, attemptCompleted,
@@ -1222,11 +1249,12 @@ func (handler *Handler) executeAttempts(
 		lastAttemptIndex = recordedAttempt
 		handler.applyGroupDecisionEffect(
 			selection.Group,
-			selection.CredentialID,
+			ref,
 			refreshCooldownCredentialVersion(result, ref.Version),
 			decision,
 			result.StatusCode,
 			attemptNow,
+			optionalModelValue(selection.UpstreamModelID),
 		)
 		if decision.Retry == health.RetryRefreshCredential &&
 			!authRefreshReplayUsed && forwardAttempts < forwardAttemptLimit {
@@ -1262,8 +1290,12 @@ func (handler *Handler) executeAttempts(
 				optionalModelValue(selection.UpstreamModelID),
 				recordedAttempt,
 			)
-			if err := handler.writeReason(ginContext, reasonUpstreamProtocol); err != nil {
-				handler.completeWriteTerminal(ginContext, recorder, reasonUpstreamProtocol.Status)
+			value := providerErrorReason(result)
+			if value.Status == http.StatusTooManyRequests {
+				setCooldownRetryAfter(ginContext, decision.CooldownUntil, handler.now())
+			}
+			if err := handler.writeReason(ginContext, value); err != nil {
+				handler.completeWriteTerminal(ginContext, recorder, value.Status)
 			}
 			return
 		}
@@ -1316,8 +1348,12 @@ func (handler *Handler) executeAttempts(
 			lastProviderError.upstreamModel,
 			lastProviderError.attemptIndex,
 		)
-		if err := handler.writeReason(ginContext, reasonUpstreamProtocol); err != nil {
-			handler.completeWriteTerminal(ginContext, recorder, reasonUpstreamProtocol.Status)
+		value := providerErrorReason(lastProviderError.result)
+		if value.Status == http.StatusTooManyRequests {
+			setCooldownRetryAfter(ginContext, lastProviderError.decision.CooldownUntil, handler.now())
+		}
+		if err := handler.writeReason(ginContext, value); err != nil {
+			handler.completeWriteTerminal(ginContext, recorder, value.Status)
 		}
 		return
 	}
@@ -1362,7 +1398,18 @@ func (handler *Handler) executeAttempts(
 		handler.completeReason(ginContext, recorder, *parameterOverrideFailure)
 		return
 	}
+	if until, limited := iterator.CooldownUntil(); limited {
+		setCooldownRetryAfter(ginContext, until, handler.now())
+		handler.completeReason(ginContext, recorder, reasonUpstreamRateLimited)
+		return
+	}
 	handler.completeReason(ginContext, recorder, reasonNoCandidate)
+}
+
+func setCooldownRetryAfter(ctx *gin.Context, until, now time.Time) {
+	if until.After(now) {
+		ctx.Writer.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(until.Sub(now).Seconds())), 10))
+	}
 }
 
 func initializeDebugHeaders(headers http.Header) {
