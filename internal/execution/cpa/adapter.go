@@ -49,6 +49,7 @@ type Adapter struct {
 type credentialPreparer interface {
 	Prepare(context.Context, channel.ID, execution.CredentialSnapshot, bool) (subscriptionruntime.Credential, *execution.ErrorEvidence)
 	RecordPassiveQuotaObservation(credentialID uint, identityGeneration uint64, observedAtMS int64, windows []providerobservation.QuotaWindow)
+	RecordPassiveQuotaPair(credentialID uint, identityGeneration uint64, preceding, latest subscription.PassiveQuotaSample)
 }
 
 // recordPassiveQuotaObservation forwards one execution's passive quota
@@ -111,8 +112,9 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 	if err != nil {
 		return unaryNotSent(execution.ErrorKindInvalidRequest, "unsupported subscription request", "", err)
 	}
-	if evidence := convertedInstructionFailure(spec, provider.ProviderKind()); evidence != nil {
-		return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: evidence}
+	spec, instructionFailure := prepareConvertedInstructions(spec, provider.ProviderKind())
+	if instructionFailure != nil {
+		return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: instructionFailure}
 	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
@@ -283,8 +285,9 @@ func (a *Adapter) ExecuteStream(
 	if countTokensOperation(spec.Operation) {
 		return streamNotSent(execution.ErrorKindInvalidRequest, "count tokens does not support streaming", "")
 	}
-	if evidence := convertedInstructionFailure(spec, provider.ProviderKind()); evidence != nil {
-		return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: evidence}
+	spec, instructionFailure := prepareConvertedInstructions(spec, provider.ProviderKind())
+	if instructionFailure != nil {
+		return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: instructionFailure}
 	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
