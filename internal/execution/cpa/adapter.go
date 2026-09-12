@@ -111,6 +111,9 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 	if err != nil {
 		return unaryNotSent(execution.ErrorKindInvalidRequest, "unsupported subscription request", "", err)
 	}
+	if evidence := convertedInstructionFailure(spec, provider.ProviderKind()); evidence != nil {
+		return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: evidence}
+	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
 		return unaryNotSent(
@@ -280,6 +283,9 @@ func (a *Adapter) ExecuteStream(
 	if countTokensOperation(spec.Operation) {
 		return streamNotSent(execution.ErrorKindInvalidRequest, "count tokens does not support streaming", "")
 	}
+	if evidence := convertedInstructionFailure(spec, provider.ProviderKind()); evidence != nil {
+		return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: evidence}
+	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
 		return streamNotSent(
@@ -361,6 +367,13 @@ func (a *Adapter) ExecuteStream(
 	emitPayloads := func(payloads [][]byte) *execution.StreamResult {
 		for _, unframed := range payloads {
 			payload := frameSSE(spec.ClientProtocol, unframed)
+			if spec.ClientProtocol == protocol.Anthropic && spec.RouteMode == execution.RouteConverted {
+				payload, err = normalizeConvertedAnthropicStartUsage(payload)
+				if err != nil {
+					failure := streamInternalError(upstreamProtocol, headers, applied, "normalize converted Anthropic usage", ready)
+					return &failure
+				}
+			}
 			payload, rewriteErr := rewriteStreamModelAlias(spec, payload)
 			if rewriteErr != nil {
 				failure := streamInternalError(upstreamProtocol, headers, applied, "rewrite subscription response model", ready)
