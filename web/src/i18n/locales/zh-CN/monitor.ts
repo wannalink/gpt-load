@@ -847,6 +847,9 @@ export default {
         routeIdentity: '路由标识',
         upstreamProtocol: '上游协议',
         affinity: '亲和命中',
+        affinityPromptPrefix: '提示词亲和命中',
+        affinityPromptCacheKey: '缓存标识亲和命中',
+        affinityResponseContinuity: '响应续接命中',
         errorCode: '错误码',
         errorSummary: '错误消息',
         expandErrorMessage: '展开完整错误消息',
@@ -985,6 +988,7 @@ export default {
       },
       pricingMode: {
         fastLabel: 'Fast 模式计价',
+        ultrafastLabel: 'Ultrafast 模式计价',
         tierLabel: '命中档位：输入 Token ≥ {threshold}',
       },
     },

@@ -867,6 +867,9 @@ export default {
         routeIdentity: 'Route identity',
         upstreamProtocol: 'Upstream protocol',
         affinity: 'Affinity hit',
+        affinityPromptPrefix: 'Prompt prefix affinity hit',
+        affinityPromptCacheKey: 'Prompt cache key affinity hit',
+        affinityResponseContinuity: 'Response continuation hit',
         errorCode: 'Error code',
         errorSummary: 'Error message',
         expandErrorMessage: 'Show full error message',
@@ -1009,6 +1012,7 @@ export default {
       },
       pricingMode: {
         fastLabel: 'Fast mode pricing',
+        ultrafastLabel: 'Ultrafast mode pricing',
         tierLabel: 'Matched tier: input tokens ≥ {threshold}',
       },
     },

@@ -1575,16 +1575,14 @@ func TestHandlerRejectsCaseCollidingModelBeforeAttempt(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsUltrafastServiceTierBeforeAttempt(t *testing.T) {
+func TestHandlerRejectsNonCanonicalServiceTierFieldsBeforeAttempt(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		path string
 		body string
 	}{
-		{name: "chat completions", path: "/v1/chat/completions", body: `{"model":"gpt-4o","service_tier":"ultrafast"}`},
 		{name: "chat completions uppercase", path: "/v1/chat/completions", body: `{"model":"gpt-4o","SERVICE_TIER":"ultrafast"}`},
 		{name: "chat completions collision", path: "/v1/chat/completions", body: `{"model":"gpt-4o","service_tier":"default","SERVICE_TIER":"ultrafast"}`},
-		{name: "responses", path: "/v1/responses", body: `{"model":"gpt-4o","service_tier":"ultrafast"}`},
 		{name: "responses uppercase", path: "/v1/responses", body: `{"model":"gpt-4o","SERVICE_TIER":"ultrafast"}`},
 		{name: "responses collision", path: "/v1/responses", body: `{"model":"gpt-4o","service_tier":"default","SERVICE_TIER":"ultrafast"}`},
 	} {
@@ -3305,8 +3303,9 @@ func TestHandlerUsesClassifierForNonStreamingNonSuccess(t *testing.T) {
 	t.Run("client error terminates after one attempt", func(t *testing.T) {
 		forwarder := &scriptedForwarder{results: []UpstreamResult{
 			{StatusCode: http.StatusBadRequest, Header: make(http.Header),
-				Body:               []byte(`{"error":"invalid input"}`),
-				ClassificationBody: []byte(`{"error":"invalid input"}`), RequestWritten: true},
+				Body:           []byte(`{"error":"invalid input"}`),
+				ExecutionError: &execution.ErrorEvidence{Kind: execution.ErrorKindHTTP, Code: "invalid_parameter"},
+				RequestWritten: true},
 			{StatusCode: http.StatusOK, Header: make(http.Header), Body: []byte(`{"ok":true}`)},
 		}}
 		engine, _, _ := newHandlerTestRuntime(t, forwarder, "sk-one", "sk-two")
@@ -4649,8 +4648,8 @@ func TestHandlerDoesNotExposeAliasedUpstreamModelWhenRetryBudgetIsExhausted(t *t
 
 	engine.ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusInternalServerError || attempts.Load() != 1 {
-		t.Fatalf("response/attempts = %d/%d, want 500/1", recorder.Code, attempts.Load())
+	if recorder.Code != http.StatusInternalServerError || attempts.Load() != 3 {
+		t.Fatalf("response/attempts = %d/%d, want 500/3", recorder.Code, attempts.Load())
 	}
 	if strings.Contains(recorder.Body.String(), upstreamModel) ||
 		!strings.Contains(recorder.Body.String(), externalModel) {

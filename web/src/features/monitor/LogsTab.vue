@@ -30,6 +30,7 @@ import QueryFeedback from '@/components/ui/QueryFeedback.vue'
 import SkeletonSurface from '@/components/ui/SkeletonSurface.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { formatEstimatedCost, formatISOInstant, formatLocalInstantWithSeconds } from '@/lib/format'
+import { resolveDateTimePreset, type DateTimePreset } from '@/lib/time'
 import { useAuthSession } from '@/features/auth/auth-session'
 
 import {
@@ -66,11 +67,28 @@ import {
 } from './monitor-route'
 
 const props = defineProps<{ filters: AppliedLogFilters }>()
+const emit = defineEmits<{
+  'time-range-resolved': [range: { from_ms: number; to_ms: number; preset: DateTimePreset }]
+}>()
 const client = useApiClient()
 const session = useAuthSession()
 const route = useRoute()
 const router = useRouter()
 const { locale, t } = useI18n()
+
+function affinityTooltip(log: RequestLogItemDto): string {
+  switch (log.affinity_kind) {
+    case 'prompt_prefix':
+      return t('monitor.logs.drawer.affinityPromptPrefix')
+    case 'prompt_cache_key':
+      return t('monitor.logs.drawer.affinityPromptCacheKey')
+    case 'response_continuity':
+      return t('monitor.logs.drawer.affinityResponseContinuity')
+    default:
+      return t('monitor.logs.drawer.affinity')
+  }
+}
+
 const logPageSizes = [20, 50, 100] as const
 const isAccessKey = computed(() => session.state.principalType === 'access_key')
 const appliedFilters = computed(() => {
@@ -83,6 +101,7 @@ const advancedOpen = computed(() => routeState.value.filtersOpen)
 const draft = ref(createLogFilterDraft(appliedFilters.value))
 let draftBeforeAdvanced: LogFilterDraft | undefined
 const filterErrors = ref<LogFilterErrors>({})
+const filterCommitPending = ref(false)
 const paginationPending = ref(false)
 const pageTransitionOrigin = ref<LogsMonitorState | null>(null)
 const currentCursor = computed(() => routeState.value.cursorHistory.at(-1))
@@ -106,7 +125,10 @@ const channelsByID = computed<Record<string, ChannelDto>>(() =>
     (channelsQuery.data.value?.items ?? []).map((channel) => [channel.channel_id, channel]),
   ),
 )
-const logsQuery = useQuery(requestLogQueryOptions(client, appliedFilters, currentCursor))
+const logsQuery = useQuery({
+  ...requestLogQueryOptions(client, appliedFilters, currentCursor),
+  enabled: computed(() => !filterCommitPending.value),
+})
 const logs = computed(() => logsQuery.data.value?.items ?? [])
 const {
   initial: initialLoading,
@@ -334,7 +356,7 @@ async function commitFilters(filters: AppliedLogFilters): Promise<void> {
     routeState.value.selectedRequestID === undefined &&
     !routeState.value.filtersOpen
   ) {
-    await logsQuery.refetch()
+    if (!filterCommitPending.value) await logsQuery.refetch({ cancelRefetch: false })
     return
   }
 
@@ -370,11 +392,36 @@ async function applyFilters(): Promise<void> {
   filterErrors.value = errors
   if (Object.keys(errors).length > 0) return
 
-  await commitFilters(applyLogFilterDraft(draft.value, appliedFilters.value))
+  await commitRefreshedFilters(applyLogFilterDraft(draft.value, appliedFilters.value))
+}
+
+async function commitRefreshedFilters(filters: AppliedLogFilters): Promise<void> {
+  if (filterCommitPending.value) return
+  filterCommitPending.value = true
+  try {
+    // 时间、筛选和游标分步更新期间不查询，避免请求中间状态。
+    await nextTick()
+    const preset = filters.preset
+    if (preset) {
+      const interval = resolveDateTimePreset(preset, Math.floor(Date.now() / 1000) * 1000)
+      if (interval.to_ms > interval.from_ms) {
+        filters.from_ms = interval.from_ms
+        filters.to_ms = interval.to_ms
+        emit('time-range-resolved', { ...interval, preset })
+      }
+    }
+    await commitFilters(filters)
+    await nextTick()
+  } finally {
+    filterCommitPending.value = false
+  }
+  await nextTick()
+  // 查询条件未变化时也刷新；已自动发出的请求直接复用。
+  await logsQuery.refetch({ cancelRefetch: false })
 }
 
 async function resetFilters(): Promise<void> {
-  await commitFilters({
+  await commitRefreshedFilters({
     from_ms: appliedFilters.value.from_ms,
     to_ms: appliedFilters.value.to_ms,
     preset: appliedFilters.value.preset,
@@ -836,11 +883,11 @@ function costLabel(log: RequestLogItemDto): string {
                   {{ responseLabel(log) }}
                 </StatusBadge>
               </OverflowTooltip>
-              <AppTooltip v-if="log.affinity_hit" :content="t('monitor.logs.drawer.affinity')">
+              <AppTooltip v-if="log.affinity_hit" :content="affinityTooltip(log)">
                 <span
                   class="logs-list__hint logs-list__affinity"
                   tabindex="0"
-                  :aria-label="t('monitor.logs.drawer.affinity')"
+                  :aria-label="affinityTooltip(log)"
                 >
                   <Magnet :size="13" aria-hidden="true" />
                 </span>

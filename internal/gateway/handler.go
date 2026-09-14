@@ -110,6 +110,8 @@ type Handler struct {
 	lifecycle           *httplifecycle.Coordinator
 	affinityCache       *affinity.Cache
 	responseBindings    *state.ResponseBindings
+	websocketLimits     websocketLimits
+	websocketBudget     websocketBudget
 }
 
 func (handler *Handler) freezeAttemptPricing(
@@ -166,6 +168,7 @@ func NewHandler(
 		limiter: limiter, requestLogSink: requestLogSink, priceTables: priceTables,
 		affinityCache:    affinity.NewCache(),
 		responseBindings: state.NewResponseBindings(),
+		websocketLimits:  defaultWebsocketLimits(),
 		newRequestID:     newRequestID,
 		requestNow:       time.Now,
 		now:              time.Now,
@@ -406,6 +409,10 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		handler.dataPlaneRouteNotFound(ginContext)
 		return
 	}
+	if websocketIntent(ginContext.Request) {
+		handler.handleWebsocket(ginContext, requestContext)
+		return
+	}
 	requestStarted := requestContext.requestStarted
 	snapshot := requestContext.snapshot
 	accessKey := requestContext.accessKey
@@ -624,7 +631,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		}
 	} else {
 		requestAffinity = handler.resolveRequestAffinity(
-			snapshot, accessKey.ID, selectedRoute.Protocol, metadata.AffinityPrefix, allowedCredentialRefs,
+			snapshot, accessKey.ID, selectedRoute.Protocol, metadata.AffinityPrefix, allowedCredentialRefs, metadata.PromptCacheKey,
 		)
 		query.PreferredCredentialID = requestAffinity.preferredCredentialID
 	}
@@ -926,7 +933,11 @@ func (handler *Handler) executeAttempts(
 		attemptSequence++
 		if attemptSequence == 1 && (originalMetadata.PreviousResponseID != "" ||
 			(requestAffinity.preferredCredentialID != 0 && selection.CredentialID == requestAffinity.preferredCredentialID)) {
-			recorder.setAffinityHit(true)
+			kind := requestAffinity.kind
+			if originalMetadata.PreviousResponseID != "" {
+				kind = telemetry.AffinityResponseContinuity
+			}
+			recorder.setAffinityHit(true, kind)
 		}
 		updateDebugHeaders(ginContext.Writer.Header(), selection.Group.Name, attemptSequence)
 		if recorder != nil {
@@ -1137,7 +1148,11 @@ func (handler *Handler) executeAttempts(
 		forwardAttempts++
 		if attemptSequence == 1 && (originalMetadata.PreviousResponseID != "" ||
 			(requestAffinity.preferredCredentialID != 0 && selection.CredentialID == requestAffinity.preferredCredentialID)) {
-			recorder.setAffinityHit(true)
+			kind := requestAffinity.kind
+			if originalMetadata.PreviousResponseID != "" {
+				kind = telemetry.AffinityResponseContinuity
+			}
+			recorder.setAffinityHit(true, kind)
 		}
 		updateDebugHeaders(ginContext.Writer.Header(), selection.Group.Name, attemptSequence)
 		executionRequestID := "untracked"

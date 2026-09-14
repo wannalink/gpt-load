@@ -34,6 +34,19 @@ func NewExecutionForwarder(executor execution.Executor) *ExecutionForwarder {
 	}
 }
 
+func (forwarder *ExecutionForwarder) OpenWebsocket(ctx context.Context, input ForwardInput) (execution.WebsocketSession, execution.WebsocketResult) {
+	spec, err := newExecutionAttemptSpec(input)
+	if forwarder != nil && err == nil {
+		if opener, ok := forwarder.executor.(execution.WebsocketOpener); ok {
+			return opener.OpenWebsocket(ctx, spec)
+		}
+	}
+	return nil, execution.WebsocketResult{DispatchState: execution.DispatchNotSent, Error: &execution.ErrorEvidence{
+		Kind: execution.ErrorKindInvalidRequest, OriginHint: execution.ErrorOriginInternal,
+		ScopeHint: execution.ErrorScopeRequest, Code: "websocket_not_supported", Summary: "Native WebSocket is not supported.",
+	}}
+}
+
 func (forwarder *ExecutionForwarder) Forward(
 	ctx context.Context,
 	input ForwardInput,
@@ -316,7 +329,15 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 	}
 	capturedUsage := streamEvents.finalizeUsage()
 	result := upstreamFromExecutionStreamResult(ctx, input, terminal, streamUsage)
-	result.Usage = preferCapturedStreamUsage(result.Usage, capturedUsage)
+	if input.ObserveUsage && input.ClientProtocol == protocol.Anthropic &&
+		input.RouteMode == execution.RouteNative && capturedUsage.State != usage.StateMissing {
+		// 原生 Anthropic 流以实际事件为用量依据。SDK 的最大值合并会丢失
+		// 输入修正、明确的零、缓存 TTL 明细，以及流是否完整结束的信息。
+		result.Usage = capturedUsage
+	} else {
+		// 未采集到用量时，保留执行层已经取得的证据。
+		result.Usage = preferCapturedStreamUsage(result.Usage, capturedUsage)
+	}
 	result.Committed = committed
 	if len(errorBody) > 0 {
 		result.Body = append([]byte(nil), errorBody...)
@@ -747,6 +768,7 @@ func newExecutionAttemptSpec(input ForwardInput) (execution.AttemptSpec, error) 
 		Path:                     input.Request.Path,
 		RawQuery:                 input.Request.RawQuery,
 		Header:                   headers,
+		ConfiguredHeaders:        input.Group.HeaderRules.ConfiguredNames(),
 		Body:                     input.Request.Body,
 		IncludeUsage:             input.ObserveUsage,
 		ForceCredentialRefresh:   input.ForceCredentialRefresh,
