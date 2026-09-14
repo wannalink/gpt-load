@@ -8,7 +8,7 @@ import (
 )
 
 // GeminiFreeTierQuotaCooldown is the forced cooldown duration for a key that exceeds the free tier request quota.
-const GeminiFreeTierQuotaCooldown = 10 * time.Minute
+const GeminiFreeTierQuotaCooldown = 20 * time.Minute
 
 // GeminiFreeTierQuotaMetric is the specific metric string returned in the Gemini 429 error.
 const GeminiFreeTierQuotaMetric = "generativelanguage.googleapis.com/generate_content_free_tier_requests"
