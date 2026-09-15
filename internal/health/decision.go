@@ -63,6 +63,8 @@ type DecisionContext struct {
 	CredentialRefreshable    bool
 	Method                   string
 	Operation                execution.Operation
+	CredentialID             uint
+	Model                    string
 }
 
 // Decision is the complete business decision for one execution attempt.

@@ -442,7 +442,7 @@ func (s *websocketConnection) executeTurn(turn websocketTurn) {
 				break
 			}
 		}
-		decision := judgeUpstreamResult(result, h.now(), health.DecisionContext{DefaultRateLimitCooldown: fixedCooldown, CredentialRefreshable: selection.Group.ConnectionType == "subscription", Method: http.MethodPost, Operation: execution.OperationResponsesCreate})
+		decision := judgeUpstreamResult(result, h.now(), health.DecisionContext{DefaultRateLimitCooldown: fixedCooldown, CredentialRefreshable: selection.Group.ConnectionType == "subscription", Method: http.MethodPost, Operation: execution.OperationResponsesCreate, CredentialID: selection.CredentialID, Model: input.UpstreamModelID})
 		index := recorder.recordStreamAttempt(selection, credential.secrets, result, decision, started, recorder.now())
 		h.applyGroupDecisionEffect(selection.Group, ref, 0, decision, result.StatusCode, h.now(), input.UpstreamModelID)
 		if decision.Effect == health.EffectSkipGroup {
@@ -460,6 +460,7 @@ func (s *websocketConnection) executeTurn(turn websocketTurn) {
 		}
 		if result.Stream.EndReason == StreamEndCleanEOF {
 			h.recordCredentialSuccess(ref, h.now())
+			health.ResetGeminiBackoff(ref.ID, input.UpstreamModelID)
 			if requiredRef == nil {
 				h.recordAffinitySuccess(affinity, selection, ref)
 			}

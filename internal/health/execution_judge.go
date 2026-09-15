@@ -339,6 +339,9 @@ func decisionForExecutionCategory(
 	if geminiDecision, ok := geminiFreeTierQuotaDecision(attempt); ok {
 		return geminiDecision
 	}
+	if demandDecision, ok := geminiHighDemandDecision(attempt, decisionContext); ok {
+		return demandDecision
+	}
 	if transientCapacity, ok := transientCapacityDecision(attempt); ok {
 		return transientCapacity
 	}

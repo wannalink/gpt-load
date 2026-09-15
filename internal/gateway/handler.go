@@ -920,6 +920,8 @@ func (handler *Handler) executeAttempts(
 			CredentialRefreshable:    credentialRefreshable,
 			Method:                   method,
 			Operation:                operation,
+			CredentialID:             selection.CredentialID,
+			Model:                    optionalModelValue(selection.UpstreamModelID),
 		}
 	}
 	recordCandidatePreparationFailure := func(
@@ -1263,6 +1265,7 @@ func (handler *Handler) executeAttempts(
 			)
 			if stream && result.Stream.EndReason == StreamEndCleanEOF {
 				handler.recordCredentialSuccess(ref, attemptNow)
+				health.ResetGeminiBackoff(ref.ID, optionalModelValue(selection.UpstreamModelID))
 				if originalMetadata.PreviousResponseID == "" {
 					handler.recordAffinitySuccess(requestAffinity, selection, ref)
 				}
@@ -1291,6 +1294,7 @@ func (handler *Handler) executeAttempts(
 			result.StatusCode >= http.StatusOK &&
 			result.StatusCode < http.StatusMultipleChoices {
 			handler.recordCredentialSuccess(ref, attemptNow)
+			health.ResetGeminiBackoff(ref.ID, optionalModelValue(selection.UpstreamModelID))
 		}
 		recordedAttempt := recorder.recordAttempt(
 			selection, normalizedCredential.secrets, result, decision, attemptStarted, attemptCompleted,
