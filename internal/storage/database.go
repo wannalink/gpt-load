@@ -26,7 +26,7 @@ var databaseLogger = newDatabaseLogger(os.Stdout)
 
 func newDatabaseLogger(output io.Writer) logger.Interface {
 	base := logger.New(log.New(output, "\r\n", log.LstdFlags), logger.Config{
-		SlowThreshold:             200 * time.Millisecond,
+		SlowThreshold:             2 * time.Second,
 		LogLevel:                  logger.Warn,
 		IgnoreRecordNotFoundError: true,
 		ParameterizedQueries:      true,

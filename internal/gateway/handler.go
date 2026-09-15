@@ -1477,11 +1477,7 @@ func (handler *Handler) executeAttempts(
 	}
 	if until, limited := iterator.CooldownUntil(); limited {
 		setCooldownRetryAfter(ginContext, until, handler.now())
-		if iterator.IsModelCooldown() {
-			handler.completeReason(ginContext, recorder, reasonUpstreamHighDemand)
-		} else {
-			handler.completeReason(ginContext, recorder, reasonUpstreamRateLimited)
-		}
+		handler.completeReason(ginContext, recorder, reasonUpstreamRateLimited)
 		return
 	}
 	handler.completeReason(ginContext, recorder, reasonNoCandidate)
