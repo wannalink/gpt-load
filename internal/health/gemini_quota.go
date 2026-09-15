@@ -29,8 +29,8 @@ const GeminiFreeTierQuotaErrorSubstring = "quota exceeded for metric: generative
 const GeminiHighDemandErrorSubstring = "this model is currently experiencing high demand. spikes in demand are usually temporary. please try again later."
 
 type geminiBackoffKey struct {
-	credentialID uint
-	model        string
+	groupID uint
+	model   string
 }
 
 type geminiBackoffState struct {
@@ -43,11 +43,11 @@ var (
 	geminiBackoffs  = make(map[geminiBackoffKey]*geminiBackoffState)
 )
 
-func getNextGeminiBackoff(credID uint, model string, now time.Time) time.Duration {
-	if credID == 0 || model == "" {
+func getNextGeminiBackoff(groupID uint, model string, now time.Time) time.Duration {
+	if groupID == 0 || model == "" {
 		return 1 * time.Minute
 	}
-	key := geminiBackoffKey{credentialID: credID, model: model}
+	key := geminiBackoffKey{groupID: groupID, model: model}
 
 	geminiBackoffMu.Lock()
 	defer geminiBackoffMu.Unlock()
@@ -158,18 +158,18 @@ func geminiHighDemandDecision(attempt ExecutionAttempt, context DecisionContext)
 		RuleID("gemini.high_demand_model_cooldown"),
 	)
 
-	delay := getNextGeminiBackoff(context.CredentialID, context.Model, attempt.Now)
+	delay := getNextGeminiBackoff(context.GroupID, context.Model, attempt.Now)
 	res.CooldownUntil = attempt.Now.Add(delay)
 
 	return res, true
 }
 
-// ResetGeminiBackoff instantly resets the high demand exponential backoff timer for a key-model pair.
-func ResetGeminiBackoff(credID uint, model string) {
-	if credID == 0 || model == "" {
+// ResetGeminiBackoff instantly resets the high demand exponential backoff timer for a group-model pair.
+func ResetGeminiBackoff(groupID uint, model string) {
+	if groupID == 0 || model == "" {
 		return
 	}
-	key := geminiBackoffKey{credentialID: credID, model: model}
+	key := geminiBackoffKey{groupID: groupID, model: model}
 
 	geminiBackoffMu.Lock()
 	defer geminiBackoffMu.Unlock()

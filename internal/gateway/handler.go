@@ -277,6 +277,24 @@ func (handler *Handler) applyGroupDecisionEffect(
 	attemptNow time.Time,
 	model string,
 ) {
+	if decision.Effect == health.EffectCooldownModel && decision.RuleID == "gemini.high_demand_model_cooldown" {
+		refs := handler.registry.CaptureActiveCredentialRefs([]uint{group.ID})
+		for _, credentialRef := range refs {
+			handler.mutateCredentialForTarget(credentialRef, func() {
+				accepted, changed := handler.registry.SetModelCooldown(credentialRef, model, decision.CooldownUntil, attemptNow)
+				if accepted {
+					handler.stats.RecordProblem(credentialRef.ID, decision.Category, statusCode, attemptNow)
+				}
+				if changed {
+					utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
+						logrus.Fields{"event": "model_cooldown", "credential_id": credentialRef.ID, "model": model,
+							"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown (high demand)")
+				}
+			})
+		}
+		return
+	}
+
 	handler.applyDecisionEffectWithBlacklistPolicy(
 		ref,
 		credentialVersion,
@@ -921,6 +939,7 @@ func (handler *Handler) executeAttempts(
 			Method:                   method,
 			Operation:                operation,
 			CredentialID:             selection.CredentialID,
+			GroupID:                  selection.GroupID,
 			Model:                    optionalModelValue(selection.UpstreamModelID),
 		}
 	}
@@ -1265,7 +1284,7 @@ func (handler *Handler) executeAttempts(
 			)
 			if stream && result.Stream.EndReason == StreamEndCleanEOF {
 				handler.recordCredentialSuccess(ref, attemptNow)
-				health.ResetGeminiBackoff(ref.ID, optionalModelValue(selection.UpstreamModelID))
+				health.ResetGeminiBackoff(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
 				if originalMetadata.PreviousResponseID == "" {
 					handler.recordAffinitySuccess(requestAffinity, selection, ref)
 				}
@@ -1294,7 +1313,7 @@ func (handler *Handler) executeAttempts(
 			result.StatusCode >= http.StatusOK &&
 			result.StatusCode < http.StatusMultipleChoices {
 			handler.recordCredentialSuccess(ref, attemptNow)
-			health.ResetGeminiBackoff(ref.ID, optionalModelValue(selection.UpstreamModelID))
+			health.ResetGeminiBackoff(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
 		}
 		recordedAttempt := recorder.recordAttempt(
 			selection, normalizedCredential.secrets, result, decision, attemptStarted, attemptCompleted,

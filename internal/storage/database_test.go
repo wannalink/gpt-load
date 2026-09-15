@@ -17,7 +17,7 @@ func TestDatabasePoolLimitsUseConfiguredValuesForNetworkDatabases(t *testing.T) 
 		config.DatabaseDriverMySQL,
 		config.DatabaseDriverPostgreSQL,
 	} {
-		maxOpen, maxIdle := databasePoolLimits(driver, pool)
+		maxOpen, maxIdle := databasePoolLimits(driver, "", pool)
 		if maxOpen != 24 || maxIdle != 12 {
 			t.Fatalf("databasePoolLimits(%q) = %d/%d, want 24/12", driver, maxOpen, maxIdle)
 		}
@@ -25,12 +25,22 @@ func TestDatabasePoolLimitsUseConfiguredValuesForNetworkDatabases(t *testing.T) 
 }
 
 func TestDatabasePoolLimitsForceSQLiteSingleConnection(t *testing.T) {
-	maxOpen, maxIdle := databasePoolLimits(config.DatabaseDriverSQLite, config.DatabasePoolConfig{
+	maxOpen, maxIdle := databasePoolLimits(config.DatabaseDriverSQLite, ":memory:", config.DatabasePoolConfig{
 		MaxOpenConnections: 24,
 		MaxIdleConnections: 12,
 	})
 	if maxOpen != 1 || maxIdle != 1 {
 		t.Fatalf("databasePoolLimits(SQLite) = %d/%d, want 1/1", maxOpen, maxIdle)
+	}
+}
+
+func TestDatabasePoolLimitsSQLiteFileBacked(t *testing.T) {
+	maxOpen, maxIdle := databasePoolLimits(config.DatabaseDriverSQLite, "test.db", config.DatabasePoolConfig{
+		MaxOpenConnections: 24,
+		MaxIdleConnections: 12,
+	})
+	if maxOpen != 24 || maxIdle != 12 {
+		t.Fatalf("databasePoolLimits(SQLite File) = %d/%d, want 24/12", maxOpen, maxIdle)
 	}
 }
 

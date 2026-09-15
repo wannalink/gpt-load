@@ -64,6 +64,7 @@ type DecisionContext struct {
 	Method                   string
 	Operation                execution.Operation
 	CredentialID             uint
+	GroupID                  uint
 	Model                    string
 }
 

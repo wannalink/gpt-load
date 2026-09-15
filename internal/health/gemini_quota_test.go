@@ -175,6 +175,7 @@ func TestGeminiHighDemandDecision(t *testing.T) {
 
 	context := DecisionContext{
 		CredentialID: 42,
+		GroupID:      1,
 		Model:        "gemini-1.5-flash",
 	}
 
@@ -231,7 +232,7 @@ func TestGeminiHighDemandDecision(t *testing.T) {
 	}
 
 	// Successful request triggers ResetGeminiBackoff
-	ResetGeminiBackoff(context.CredentialID, context.Model)
+	ResetGeminiBackoff(context.GroupID, context.Model)
 
 	// 6th hit soon after -> should reset back to 1m!
 	attempt6 := attempt
@@ -260,6 +261,7 @@ func TestJudgeExecutionGeminiHighDemand(t *testing.T) {
 		Operation:                execution.OperationChatCompletion,
 		DefaultRateLimitCooldown: time.Minute,
 		CredentialID:             99,
+		GroupID:                  1,
 		Model:                    "gemini-2.5-pro",
 	}
 
