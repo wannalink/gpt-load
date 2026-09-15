@@ -42,3 +42,34 @@ func (iterator *Iterator) CooldownUntil() (time.Time, bool) {
 	}
 	return earliest, !earliest.IsZero()
 }
+
+// IsModelCooldown reports whether the earliest applicable cooldown is a model-level cooldown.
+func (iterator *Iterator) IsModelCooldown() bool {
+	source, ok := iterator.credentials.(interface {
+		Snapshot() []state.CredentialRuntimeView
+	})
+	if !ok {
+		return false
+	}
+	inspection, err := Inspect(iterator.snapshot, source.Snapshot(), iterator.query, iterator.now())
+	if err != nil || inspection.Routable {
+		return false
+	}
+	var earliest time.Time
+	var isModel bool
+	for _, group := range inspection.Groups {
+		if !group.Included {
+			continue
+		}
+		for _, credential := range group.Credentials {
+			if credential.Reason != ReasonCredentialCooldown && credential.Reason != ReasonModelCooldown {
+				continue
+			}
+			if earliest.IsZero() || credential.CooldownUntil.Before(earliest) {
+				earliest = credential.CooldownUntil
+				isModel = (credential.Reason == ReasonModelCooldown)
+			}
+		}
+	}
+	return isModel
+}

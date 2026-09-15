@@ -279,18 +279,22 @@ func (handler *Handler) applyGroupDecisionEffect(
 ) {
 	if decision.Effect == health.EffectCooldownModel && decision.RuleID == "gemini.high_demand_model_cooldown" {
 		refs := handler.registry.CaptureActiveCredentialRefs([]uint{group.ID})
+		anyChanged := false
 		for _, credentialRef := range refs {
 			handler.mutateCredentialForTarget(credentialRef, func() {
 				accepted, changed := handler.registry.SetModelCooldown(credentialRef, model, decision.CooldownUntil, attemptNow)
-				if accepted {
+				if accepted && credentialRef.ID == ref.ID {
 					handler.stats.RecordProblem(credentialRef.ID, decision.Category, statusCode, attemptNow)
 				}
 				if changed {
-					utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
-						logrus.Fields{"event": "model_cooldown", "credential_id": credentialRef.ID, "model": model,
-							"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown (high demand)")
+					anyChanged = true
 				}
 			})
+		}
+		if anyChanged {
+			utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
+				logrus.Fields{"event": "model_cooldown", "group_id": group.ID, "model": model,
+					"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown (high demand)")
 		}
 		return
 	}
@@ -1473,7 +1477,11 @@ func (handler *Handler) executeAttempts(
 	}
 	if until, limited := iterator.CooldownUntil(); limited {
 		setCooldownRetryAfter(ginContext, until, handler.now())
-		handler.completeReason(ginContext, recorder, reasonUpstreamRateLimited)
+		if iterator.IsModelCooldown() {
+			handler.completeReason(ginContext, recorder, reasonUpstreamHighDemand)
+		} else {
+			handler.completeReason(ginContext, recorder, reasonUpstreamRateLimited)
+		}
 		return
 	}
 	handler.completeReason(ginContext, recorder, reasonNoCandidate)
