@@ -13,9 +13,8 @@ primary_region = 'ams'
   DATA_DIR = '/app/data'
   HOST = '0.0.0.0'
   PORT = '3001'
-  GOMEMLIMIT = '200MiB'
+  GOMEMLIMIT = '185MiB'
   GOGC = '80'
-  MODELS_DEV_AUTO_SYNC_ENABLED = 'false'
 
 [[mounts]]
   source = 'gpt_storage'

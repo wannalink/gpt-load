@@ -593,7 +593,7 @@ func (r *Runtime) executeNativeStream(
 				}
 				if status >= http.StatusOK && status < http.StatusMultipleChoices {
 					if err := firstEventGate.finish(); err != nil {
-						return attemptedStreamFailure(execution.ErrorKindInternal, "invalid upstream SSE stream")
+						return nativeStreamProtocolFailure(status, headers, requestID, model, usageEvidence)
 					}
 				}
 				if aliasRewriter != nil && status >= http.StatusOK && status < http.StatusMultipleChoices {
@@ -650,7 +650,7 @@ func (r *Runtime) executeNativeStream(
 					if err != nil {
 						cancelCall()
 						if !started {
-							return attemptedStreamFailure(execution.ErrorKindInternal, "invalid upstream SSE stream")
+							return nativeStreamProtocolFailure(status, headers, requestID, model, usageEvidence)
 						}
 						return nativeStreamProtocolFailure(status, headers, requestID, model, usageEvidence)
 					}
@@ -819,9 +819,12 @@ func nativeStreamProtocolFailure(
 		UpstreamRequestID: requestID,
 		Usage:             cloneUsage(usageEvidence),
 		Error: &execution.ErrorEvidence{
-			Kind:      execution.ErrorKindInternal,
-			Summary:   "invalid upstream SSE stream",
-			RequestID: requestID,
+			Kind:       execution.ErrorKindProvider,
+			OriginHint: execution.ErrorOriginUpstream,
+			StatusCode: status,
+			Code:       "upstream_protocol_error",
+			Summary:    "invalid upstream SSE stream",
+			RequestID:  requestID,
 		},
 	}
 }

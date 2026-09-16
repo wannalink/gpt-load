@@ -216,3 +216,36 @@ func TestConvertedStreamHTTPErrorRetriesBeforeOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestInterruptedStreamWith200AutoRetries(t *testing.T) {
+	var mu sync.Mutex
+	var attempts []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Authorization")
+		mu.Lock()
+		attempts = append(attempts, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if key == "Bearer sk-one" {
+			// Returns 200 OK headers, but drops connection without any data chunks
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"model-a","choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "model-a", dialect.NewSet(dialect.NewOpenAI()),
+		dialectGatewayGroup{id: 1, name: "stream-retry", upstreamURL: upstream.URL, apiKeys: []string{"sk-one", "sk-two"}},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a","stream":true,"messages":[]}`))
+	request.Header.Set("Authorization", "Bearer gl-client")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	mu.Lock()
+	defer mu.Unlock()
+	if response.Code != http.StatusOK || fmt.Sprint(attempts) != "[Bearer sk-one Bearer sk-two]" ||
+		!strings.Contains(response.Body.String(), "recovered") {
+		t.Fatalf("status=%d attempts=%v body=%s", response.Code, attempts, response.Body.String())
+	}
+}

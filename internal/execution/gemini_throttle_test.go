@@ -395,3 +395,114 @@ func TestGeminiThrottledExecutor(t *testing.T) {
 		t.Fatalf("expected 1 stream call, got %d", fake.streamCallCount.Load())
 	}
 }
+
+func TestGeminiModelHighDemandPauseAndRetry(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	var sleepCalled atomic.Bool
+	var sleptDuration atomic.Int64
+
+	fake := &fakeExecutor{}
+	var callCount atomic.Int32
+	fake.unaryFunc = func(ctx context.Context, spec AttemptSpec) AttemptResult {
+		n := callCount.Add(1)
+		if n == 1 {
+			return AttemptResult{
+				DispatchState: DispatchMaybeSent,
+				StatusCode:    http.StatusServiceUnavailable,
+				Body:          []byte(`{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."}}`),
+			}
+		}
+		return AttemptResult{
+			DispatchState: DispatchMaybeSent,
+			StatusCode:    http.StatusOK,
+			Body:          []byte(`{"success":true}`),
+		}
+	}
+
+	executor := NewGeminiThrottledExecutor(fake)
+	spec := AttemptSpec{
+		ChannelID:     "gemini",
+		UpstreamModel: "gemini-flash-latest",
+		Credential:    NewCredentialSnapshot(1, 1, 1, []byte("key-1")),
+	}
+
+	state := executor.registry.getState(spec)
+	state.nowFunc = func() time.Time { return currentTime }
+	state.sleepFunc = func(ctx context.Context, d time.Duration) error {
+		sleepCalled.Store(true)
+		sleptDuration.Store(int64(d))
+		currentTime = currentTime.Add(d)
+		return nil
+	}
+
+	result := executor.Execute(context.Background(), spec)
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 after retry, got %d", result.StatusCode)
+	}
+	if callCount.Load() != 2 {
+		t.Fatalf("expected 2 calls (first 503, retry 200), got %d", callCount.Load())
+	}
+	if !sleepCalled.Load() {
+		t.Fatalf("expected pause sleep before retry")
+	}
+	if time.Duration(sleptDuration.Load()) < 1*time.Minute {
+		t.Fatalf("expected at least 1 minute pause, got %v", time.Duration(sleptDuration.Load()))
+	}
+}
+
+func TestGeminiModelHighDemandDifferentModelNotPaused(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	fake := &fakeExecutor{}
+	fake.unaryFunc = func(ctx context.Context, spec AttemptSpec) AttemptResult {
+		if spec.UpstreamModel == "model-overloaded" {
+			return AttemptResult{
+				DispatchState: DispatchMaybeSent,
+				StatusCode:    http.StatusServiceUnavailable,
+				Body:          []byte(`{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."}}`),
+			}
+		}
+		return AttemptResult{
+			DispatchState: DispatchMaybeSent,
+			StatusCode:    http.StatusOK,
+			Body:          []byte(`{"success":true}`),
+		}
+	}
+
+	executor := NewGeminiThrottledExecutor(fake)
+	overloadedSpec := AttemptSpec{
+		ChannelID:     "gemini",
+		UpstreamModel: "model-overloaded",
+		Credential:    NewCredentialSnapshot(1, 1, 1, []byte("key-1")),
+	}
+	normalSpec := AttemptSpec{
+		ChannelID:     "gemini",
+		UpstreamModel: "model-normal",
+		Credential:    NewCredentialSnapshot(1, 1, 1, []byte("key-1")),
+	}
+
+	state := executor.registry.getState(overloadedSpec)
+	state.nowFunc = func() time.Time { return currentTime }
+	state.sleepFunc = func(ctx context.Context, d time.Duration) error {
+		currentTime = currentTime.Add(d)
+		return nil
+	}
+
+	// First execute overloaded model - hits 503
+	_ = executor.Execute(context.Background(), overloadedSpec)
+
+	// Now execute normal model - must not pause
+	var normalSlept bool
+	state.sleepFunc = func(ctx context.Context, d time.Duration) error {
+		normalSlept = true
+		return nil
+	}
+
+	normalResult := executor.Execute(context.Background(), normalSpec)
+	if normalResult.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for normal model, got %d", normalResult.StatusCode)
+	}
+	if normalSlept {
+		t.Fatalf("normal model slept unexpectedly due to other model's pause")
+	}
+}

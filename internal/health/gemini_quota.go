@@ -166,6 +166,9 @@ func geminiHighDemandDecision(attempt ExecutionAttempt, context DecisionContext)
 
 // ResetGeminiBackoff instantly resets the high demand exponential backoff timer for a group-model pair.
 func ResetGeminiBackoff(groupID uint, model string) {
+	if model != "" {
+		execution.ResetGeminiModelPause(model)
+	}
 	if groupID == 0 || model == "" {
 		return
 	}

@@ -278,24 +278,9 @@ func (handler *Handler) applyGroupDecisionEffect(
 	model string,
 ) {
 	if decision.Effect == health.EffectCooldownModel && decision.RuleID == "gemini.high_demand_model_cooldown" {
-		refs := handler.registry.CaptureActiveCredentialRefs([]uint{group.ID})
-		anyChanged := false
-		for _, credentialRef := range refs {
-			handler.mutateCredentialForTarget(credentialRef, func() {
-				accepted, changed := handler.registry.SetModelCooldown(credentialRef, model, decision.CooldownUntil, attemptNow)
-				if accepted && credentialRef.ID == ref.ID {
-					handler.stats.RecordProblem(credentialRef.ID, decision.Category, statusCode, attemptNow)
-				}
-				if changed {
-					anyChanged = true
-				}
-			})
-		}
-		if anyChanged {
-			utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
-				logrus.Fields{"event": "model_cooldown", "group_id": group.ID, "model": model,
-					"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown (high demand)")
-		}
+		utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
+			logrus.Fields{"event": "model_cooldown", "group_id": group.ID, "model": model,
+				"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown (high demand)")
 		return
 	}
 

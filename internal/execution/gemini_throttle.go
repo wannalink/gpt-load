@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,6 +46,49 @@ func isResourceExhausted(statusCode int, body []byte, evidence *ErrorEvidence) b
 		return true
 	}
 	return false
+}
+
+// isHighDemand503 detects Gemini's 503 high demand response ("This model is currently experiencing high demand...").
+func isHighDemand503(statusCode int, body []byte, evidence *ErrorEvidence) bool {
+	is503 := statusCode == http.StatusServiceUnavailable ||
+		(evidence != nil && evidence.StatusCode == http.StatusServiceUnavailable)
+	if !is503 {
+		return false
+	}
+	const marker = "this model is currently experiencing high demand"
+	if len(body) > 0 && strings.Contains(strings.ToLower(string(body)), marker) {
+		return true
+	}
+	if evidence != nil {
+		summary := strings.ToLower(evidence.Summary)
+		code := strings.ToLower(evidence.Code)
+		typeVal := strings.ToLower(evidence.Type)
+		if strings.Contains(summary, marker) || strings.Contains(code, marker) || strings.Contains(typeVal, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// geminiTargetModel extracts the model name for Gemini rate limiting and endpoint pausing.
+func geminiTargetModel(spec AttemptSpec) string {
+	if spec.UpstreamModel != "" {
+		return spec.UpstreamModel
+	}
+	if spec.ClientModel != "" {
+		return spec.ClientModel
+	}
+	if idx := strings.Index(spec.Path, "/models/"); idx != -1 {
+		rest := spec.Path[idx+len("/models/"):]
+		if colon := strings.Index(rest, ":"); colon != -1 {
+			return rest[:colon]
+		}
+		if slash := strings.Index(rest, "/"); slash != -1 {
+			return rest[:slash]
+		}
+		return rest
+	}
+	return ""
 }
 
 // geminiRateLimitState tracks the sliding rate-limiting window and request count for a single Gemini channel.
@@ -193,17 +237,116 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 	return release, nil
 }
 
-// GeminiThrottleRegistry manages rate-limiting states per channel.
+// GeminiThrottleRegistry manages rate-limiting states per channel and model pauses.
 type GeminiThrottleRegistry struct {
-	mu     sync.Mutex
-	states map[string]*geminiRateLimitState
+	mu          sync.Mutex
+	states      map[string]*geminiRateLimitState
+	modelPauses map[string]*geminiModelPauseState
+}
+
+type geminiModelPauseState struct {
+	mu           sync.Mutex
+	currentDelay time.Duration
+	lastFailure  time.Time
+	pausedUntil  time.Time
+}
+
+var activeGeminiThrottleRegistry atomic.Pointer[GeminiThrottleRegistry]
+
+// ResetGeminiModelPause resets any high demand pause for the specified model in the active registry.
+func ResetGeminiModelPause(model string) {
+	if r := activeGeminiThrottleRegistry.Load(); r != nil {
+		r.resetModelHighDemand(model)
+	}
 }
 
 // NewGeminiThrottleRegistry creates a new registry for tracking Gemini throttle states.
 func NewGeminiThrottleRegistry() *GeminiThrottleRegistry {
-	return &GeminiThrottleRegistry{
-		states: make(map[string]*geminiRateLimitState),
+	r := &GeminiThrottleRegistry{
+		states:      make(map[string]*geminiRateLimitState),
+		modelPauses: make(map[string]*geminiModelPauseState),
 	}
+	activeGeminiThrottleRegistry.Store(r)
+	return r
+}
+
+func (r *GeminiThrottleRegistry) getModelPauseState(model string) *geminiModelPauseState {
+	model = strings.ToLower(strings.TrimSpace(model))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.modelPauses == nil {
+		r.modelPauses = make(map[string]*geminiModelPauseState)
+	}
+	state, exists := r.modelPauses[model]
+	if !exists {
+		state = &geminiModelPauseState{
+			currentDelay: 1 * time.Minute,
+		}
+		r.modelPauses[model] = state
+	}
+	return state
+}
+
+func (r *GeminiThrottleRegistry) checkModelPause(
+	ctx context.Context,
+	model string,
+	sleepFunc func(context.Context, time.Duration) error,
+	nowFunc func() time.Time,
+) error {
+	if model == "" {
+		return nil
+	}
+	pauseState := r.getModelPauseState(model)
+	pauseState.mu.Lock()
+	now := nowFunc()
+	if pauseState.pausedUntil.After(now) {
+		d := pauseState.pausedUntil.Sub(now)
+		pausedUntil := pauseState.pausedUntil
+		pauseState.mu.Unlock()
+		log.Printf("[gemini-throttle] model %q high demand pause active: pausing request for %v (until %v)",
+			model, d, pausedUntil.Format(time.RFC3339))
+		if err := sleepFunc(ctx, d); err != nil {
+			log.Printf("[gemini-throttle] request canceled while waiting in model %q pause queue: %v", model, err)
+			return err
+		}
+		log.Printf("[gemini-throttle] model %q pause elapsed, resuming dispatch", model)
+		return nil
+	}
+	pauseState.mu.Unlock()
+	return nil
+}
+
+func (r *GeminiThrottleRegistry) recordModelHighDemand(model string, now time.Time) time.Duration {
+	if model == "" {
+		return 1 * time.Minute
+	}
+	pauseState := r.getModelPauseState(model)
+	pauseState.mu.Lock()
+	defer pauseState.mu.Unlock()
+
+	if pauseState.currentDelay == 0 || now.Sub(pauseState.lastFailure) > pauseState.currentDelay*2+10*time.Minute {
+		pauseState.currentDelay = 1 * time.Minute
+	} else {
+		pauseState.currentDelay *= 2
+		if pauseState.currentDelay > 10*time.Minute {
+			pauseState.currentDelay = 10 * time.Minute
+		}
+	}
+	pauseState.lastFailure = now
+	pauseState.pausedUntil = now.Add(pauseState.currentDelay)
+	return pauseState.currentDelay
+}
+
+func (r *GeminiThrottleRegistry) resetModelHighDemand(model string) {
+	if model == "" {
+		return
+	}
+	pauseState := r.getModelPauseState(model)
+	pauseState.mu.Lock()
+	defer pauseState.mu.Unlock()
+
+	pauseState.currentDelay = 1 * time.Minute
+	pauseState.pausedUntil = time.Time{}
 }
 
 func (r *GeminiThrottleRegistry) getState(spec AttemptSpec) *geminiRateLimitState {
@@ -256,6 +399,21 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 	}
 
 	state := e.registry.getState(spec)
+	model := geminiTargetModel(spec)
+
+	if err := e.registry.checkModelPause(ctx, model, state.sleep, state.now); err != nil {
+		return AttemptResult{
+			DispatchState: DispatchNotSent,
+			Error: &ErrorEvidence{
+				Kind:         ErrorKindCanceled,
+				OriginHint:   ErrorOriginClient,
+				ScopeHint:    ErrorScopeRequest,
+				Summary:      "request canceled while waiting for model pause: " + err.Error(),
+				ReplaySafety: ReplaySafetyRejectedBeforeProcessing,
+			},
+		}
+	}
+
 	release, err := state.beforeSend(ctx)
 	if err != nil {
 		return AttemptResult{
@@ -272,6 +430,15 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 
 	result := e.inner.Execute(ctx, spec)
 
+	if isHighDemand503(result.StatusCode, result.Body, result.Error) && ctx.Err() == nil {
+		delay := e.registry.recordModelHighDemand(model, state.now())
+		log.Printf("[gemini-throttle] model %q received 503 high demand: pausing request for %v before retry", model, delay)
+		if sleepErr := state.sleep(ctx, delay); sleepErr == nil {
+			log.Printf("[gemini-throttle] model %q pause elapsed, retrying request", model)
+			result = e.inner.Execute(ctx, spec)
+		}
+	}
+
 	hitExhaustion := isResourceExhausted(result.StatusCode, result.Body, result.Error)
 	statusCode := result.StatusCode
 	if statusCode == 0 && result.Error != nil && result.Error.StatusCode != 0 {
@@ -282,6 +449,10 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 	} else if statusCode == 0 && result.DispatchState == DispatchNotSent {
 		release(0, false)
 		return result
+	}
+
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		e.registry.resetModelHighDemand(model)
 	}
 
 	release(statusCode, hitExhaustion)
@@ -307,6 +478,21 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 	}
 
 	state := e.registry.getState(spec)
+	model := geminiTargetModel(spec)
+
+	if err := e.registry.checkModelPause(ctx, model, state.sleep, state.now); err != nil {
+		return StreamResult{
+			DispatchState: DispatchNotSent,
+			Error: &ErrorEvidence{
+				Kind:         ErrorKindCanceled,
+				OriginHint:   ErrorOriginClient,
+				ScopeHint:    ErrorScopeRequest,
+				Summary:      "request canceled while waiting for model pause: " + err.Error(),
+				ReplaySafety: ReplaySafetyRejectedBeforeProcessing,
+			},
+		}
+	}
+
 	release, err := state.beforeSend(ctx)
 	if err != nil {
 		return StreamResult{
@@ -323,6 +509,15 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 
 	result := e.inner.ExecuteStream(ctx, spec, sink)
 
+	if isHighDemand503(result.StatusCode, nil, result.Error) && !result.ResponseStarted && ctx.Err() == nil {
+		delay := e.registry.recordModelHighDemand(model, state.now())
+		log.Printf("[gemini-throttle] model %q received 503 high demand: pausing stream for %v before retry", model, delay)
+		if sleepErr := state.sleep(ctx, delay); sleepErr == nil {
+			log.Printf("[gemini-throttle] model %q pause elapsed, retrying stream", model)
+			result = e.inner.ExecuteStream(ctx, spec, sink)
+		}
+	}
+
 	hitExhaustion := isResourceExhausted(result.StatusCode, nil, result.Error)
 	statusCode := result.StatusCode
 	if statusCode == 0 && result.Error != nil && result.Error.StatusCode != 0 {
@@ -333,6 +528,10 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 	} else if statusCode == 0 && result.DispatchState == DispatchNotSent {
 		release(0, false)
 		return result
+	}
+
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		e.registry.resetModelHighDemand(model)
 	}
 
 	release(statusCode, hitExhaustion)

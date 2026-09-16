@@ -353,6 +353,9 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		result.Header = ready.Header.Clone()
 		result.ResponseStarted = true
 		result.UpstreamRequestID = ready.UpstreamRequestID
+		if downstreamErr != nil || terminal.Error != nil {
+			result.Stream = executionStreamObservation(ctx, terminal, downstreamErr, streamEvents)
+		}
 	}
 	if !committed && streamEvents.firstEventWasProviderError() {
 		summary := streamEvents.firstSummary

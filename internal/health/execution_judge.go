@@ -483,9 +483,22 @@ func retryableUpstreamResponse(attempt ExecutionAttempt) bool {
 	case execution.ErrorKindProvider:
 		switch evidence.Code {
 		case "upstream_protocol_error", "upstream_response_incomplete":
+			if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
+				return true
+			}
 			return false
 		}
 		return attempt.ResponseStarted()
+	case execution.ErrorKindTransport:
+		if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
+			return true
+		}
+		return false
+	case execution.ErrorKindTimeout:
+		if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
+			return true
+		}
+		return false
 	default:
 		return false
 	}
