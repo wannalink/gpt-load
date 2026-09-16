@@ -15,6 +15,7 @@ primary_region = 'ams'
   PORT = '3001'
   GOMEMLIMIT = '200MiB'
   GOGC = '80'
+  MODELS_DEV_AUTO_SYNC_ENABLED = 'false'
 
 [[mounts]]
   source = 'gpt_storage'
