@@ -579,6 +579,16 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		handler.completeReason(ginContext, recorder, reasonInvalidProtocolRequest)
 		return
 	}
+
+	if len(body) > 1<<20 { // larger than 1MB
+		utils.LogPlaneBestEffort(
+			handler.logger,
+			logrus.InfoLevel,
+			utils.LogPlaneData,
+			logrus.Fields{"request_id": requestID, "size_bytes": len(body)},
+			"Handling exceptionally large request body before unmarshaling",
+		)
+	}
 	requestHeaders := ginContext.Request.Header.Clone()
 	platformheader.StripRepresentationMetadata(requestHeaders)
 	parsed := &dialect.ParsedRequest{
