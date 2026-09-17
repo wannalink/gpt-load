@@ -59,6 +59,9 @@ type ForwardInput struct {
 	// ContinuityKey is an opaque per-tenant replay boundary for provider-private
 	// thinking and tool state. It never crosses the gateway DTO boundary.
 	ContinuityKey string
+	// BufferStream buffers the entire stream before committing to downstream,
+	// allowing auto-retry if the stream terminates prematurely.
+	BufferStream bool
 }
 
 // UpstreamResult is the gateway's stable view of one logical execution

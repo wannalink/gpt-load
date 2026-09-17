@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +113,7 @@ type Handler struct {
 	responseBindings    *state.ResponseBindings
 	websocketLimits     websocketLimits
 	websocketBudget     websocketBudget
+	bufferStreams       bool
 }
 
 func (handler *Handler) freezeAttemptPricing(
@@ -162,6 +164,10 @@ func NewHandler(
 	manager.SetSchedulingState(registry.SchedulingState())
 	channels := channel.NewRegistry()
 	subscriptions, _ := subscriptionruntime.NewRuntime(channels, subscriptionproviders.Implementations()...)
+	bufferStreams := true
+	if val := os.Getenv("GPT_LOAD_BUFFER_STREAMS"); val == "false" || val == "0" {
+		bufferStreams = false
+	}
 	handler := &Handler{
 		manager: manager, channels: channels, subscriptions: subscriptions, registry: registry, encryption: encryptionService,
 		forwarder: forwarder, dialects: dialects, stats: stats, mutations: mutations,
@@ -169,6 +175,7 @@ func NewHandler(
 		affinityCache:    affinity.NewCache(),
 		responseBindings: state.NewResponseBindings(),
 		websocketLimits:  defaultWebsocketLimits(),
+		bufferStreams:    bufferStreams,
 		newRequestID:     newRequestID,
 		requestNow:       time.Now,
 		now:              time.Now,
@@ -1206,6 +1213,7 @@ func (handler *Handler) executeAttempts(
 			ProxyFingerprint:       proxyFingerprint,
 			ForceCredentialRefresh: forceCredentialRefresh,
 			ContinuityKey:          requestAffinity.continuityKey,
+			BufferStream:           handler.bufferStreams,
 			OnResponse:             handler.responseBindingObserver(recorder.accessKeyID, selection, ref, prepared.request),
 			OnFirstResponse: func() {
 				recorder.recordFirstResponse()

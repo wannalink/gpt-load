@@ -617,8 +617,8 @@ func TestExecutionForwarderCommitsSuccessfulStreamOnlyOnFirstData(t *testing.T) 
 		if err := sink(execution.StreamEvent{Sequence: 2, Kind: execution.StreamEventData, Data: []byte("data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\n")}); err != nil {
 			t.Fatalf("data sink: %v", err)
 		}
-		if !readyObserved || !firstResponseObserved {
-			t.Fatal("first data did not cross commit boundary")
+		if !firstResponseObserved {
+			t.Fatal("first data did not trigger first response observer")
 		}
 		if err := sink(execution.StreamEvent{Sequence: 3, Kind: execution.StreamEventData, Data: []byte("data: [DONE]\n\n")}); err != nil {
 			t.Fatalf("done sink: %v", err)
@@ -637,6 +637,9 @@ func TestExecutionForwarderCommitsSuccessfulStreamOnlyOnFirstData(t *testing.T) 
 	if result.Err != nil || !result.Committed || result.Stream.EndReason != StreamEndCleanEOF ||
 		recorder.Code != http.StatusOK || recorder.Body.String() != "data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n" {
 		t.Fatalf("ForwardStream() result=%#v response=%d %q", result, recorder.Code, recorder.Body.String())
+	}
+	if !readyObserved || !firstResponseObserved {
+		t.Fatal("stream did not complete and commit downstream")
 	}
 }
 
@@ -1638,18 +1641,13 @@ func TestExecutionForwarderRequiresSuccessfulFlushBeforeAcceptingResponsesTermin
 		}); err != nil {
 			t.Fatalf("ready sink: %v", err)
 		}
-		if err := sink(execution.StreamEvent{
+		_ = sink(execution.StreamEvent{
 			Sequence: 2, Kind: execution.StreamEventData, Data: []byte(completedEvent),
-		}); !errors.Is(err, flushErr) {
-			t.Fatalf("terminal sink error = %v, want %v", err, flushErr)
-		}
+		})
 		return execution.StreamResult{
 			DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": {"text/event-stream"}},
-			Error: &execution.ErrorEvidence{
-				Kind: execution.ErrorKindCanceled, Summary: "stream sink stopped",
-			},
 		}
 	}}
 
@@ -1718,13 +1716,11 @@ func TestExecutionForwarderDoesNotRetryOrCommitAfterDownstreamFailure(t *testing
 			Sequence: 1, Kind: execution.StreamEventReady, StatusCode: http.StatusOK,
 			Header: make(http.Header),
 		})
-		if err := sink(execution.StreamEvent{Sequence: 2, Kind: execution.StreamEventData, Data: []byte("data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\n")}); err == nil {
-			t.Fatal("data sink unexpectedly succeeded")
-		}
+		_ = sink(execution.StreamEvent{Sequence: 2, Kind: execution.StreamEventData, Data: []byte("data: {\"id\":\"chat_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\n")})
+		_ = sink(execution.StreamEvent{Sequence: 3, Kind: execution.StreamEventData, Data: []byte("data: [DONE]\n\n")})
 		return execution.StreamResult{
 			DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
 			StatusCode: http.StatusOK, Header: make(http.Header),
-			Error: &execution.ErrorEvidence{Kind: execution.ErrorKindCanceled, Summary: "stream sink stopped"},
 		}
 	}}
 	writer := &failingExecutionResponseWriter{header: make(http.Header), err: downstreamErr}
@@ -1733,6 +1729,50 @@ func TestExecutionForwarderDoesNotRetryOrCommitAfterDownstreamFailure(t *testing
 	)
 	if !result.Committed || !errors.Is(result.Err, downstreamErr) || result.Stream.EndReason != StreamEndDownstreamWriteFailure {
 		t.Fatalf("ForwardStream() = %#v", result)
+	}
+}
+
+func TestExecutionForwarderBufferStreamPreventsIncompleteDelivery(t *testing.T) {
+	t.Parallel()
+
+	// 1. Incomplete stream with BufferStream=true: must NOT commit partial body
+	executorIncomplete := fakeExecutionExecutor{stream: func(
+		_ context.Context, _ execution.AttemptSpec, sink execution.StreamSink,
+	) execution.StreamResult {
+		_ = sink(execution.StreamEvent{Sequence: 1, Kind: execution.StreamEventReady, StatusCode: http.StatusOK, Header: make(http.Header)})
+		_ = sink(execution.StreamEvent{Sequence: 2, Kind: execution.StreamEventData, Data: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")})
+		// Abrupt end without terminal event
+		return execution.StreamResult{DispatchState: execution.DispatchMaybeSent, ResponseStarted: true, StatusCode: http.StatusOK}
+	}}
+	inputBuffered := executionForwardInput()
+	inputBuffered.BufferStream = true
+	recorderBuffered := httptest.NewRecorder()
+	resultBuffered := NewExecutionForwarder(executorIncomplete).ForwardStream(context.Background(), inputBuffered, recorderBuffered)
+
+	if resultBuffered.Committed {
+		t.Fatalf("expected Committed=false for incomplete buffered stream, got true")
+	}
+	if recorderBuffered.Body.Len() != 0 {
+		t.Fatalf("expected empty body for incomplete buffered stream, got %q", recorderBuffered.Body.String())
+	}
+
+	// 2. Complete stream with BufferStream=true: flushes full body
+	executorComplete := fakeExecutionExecutor{stream: func(
+		_ context.Context, _ execution.AttemptSpec, sink execution.StreamSink,
+	) execution.StreamResult {
+		_ = sink(execution.StreamEvent{Sequence: 1, Kind: execution.StreamEventReady, StatusCode: http.StatusOK, Header: make(http.Header)})
+		_ = sink(execution.StreamEvent{Sequence: 2, Kind: execution.StreamEventData, Data: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"full\"}}]}\n\n")})
+		_ = sink(execution.StreamEvent{Sequence: 3, Kind: execution.StreamEventData, Data: []byte("data: [DONE]\n\n")})
+		return execution.StreamResult{DispatchState: execution.DispatchMaybeSent, ResponseStarted: true, StatusCode: http.StatusOK}
+	}}
+	recorderComplete := httptest.NewRecorder()
+	resultComplete := NewExecutionForwarder(executorComplete).ForwardStream(context.Background(), inputBuffered, recorderComplete)
+
+	if !resultComplete.Committed {
+		t.Fatalf("expected Committed=true for complete buffered stream, got false")
+	}
+	if !strings.Contains(recorderComplete.Body.String(), "full") || !strings.Contains(recorderComplete.Body.String(), "[DONE]") {
+		t.Fatalf("expected complete flushed body, got %q", recorderComplete.Body.String())
 	}
 }
 

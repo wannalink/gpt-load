@@ -343,6 +343,7 @@ func newContinuationFixture(t *testing.T, forwarder AttemptForwarder) (*Handler,
 	t.Helper()
 	handler, _, _ := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
 	handler.dialects = dialect.NewSet(dialect.NewOpenAIResponses())
+	handler.bufferStreams = false
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
 	engine := gin.New()

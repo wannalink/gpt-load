@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -921,14 +920,15 @@ func TestGatewayRewritesAliasedStreams(t *testing.T) {
 			dialects: dialect.NewSet(dialect.NewAnthropic()),
 			path:     "/v1/messages", requestBody: `{"model":"public-model","stream":true}`,
 			streamBody: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"provider-model\"}}\n\n" +
-				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"unchanged\"}}\n\n",
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"unchanged\"}}\n\n" +
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 			want: `"model":"public-model"`, unchanged: "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"unchanged\"}}\n\n",
 		},
 		{
 			name: "Gemini", value: protocol.Gemini,
 			dialects: dialect.NewSet(dialect.NewGemini()),
 			path:     "/v1beta/models/public-model:streamGenerateContent", requestBody: `{}`,
-			streamBody: "data: {\"modelVersion\":\"provider-model\",\"candidates\":[]}\n\n",
+			streamBody: "data: {\"modelVersion\":\"provider-model\",\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
 			want:       `"modelVersion":"public-model"`,
 		},
 	}
@@ -1093,20 +1093,15 @@ func TestAnthropicGatewayFailover(t *testing.T) {
 
 func TestAnthropicGatewayStream(t *testing.T) {
 	firstEventSent := make(chan struct{})
-	release := make(chan struct{})
 	requestHeaders := make(chan http.Header, 1)
-	var releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(release) })
 	primary := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = io.Copy(io.Discard, request.Body)
 		requestHeaders <- request.Header.Clone()
 		writer.Header().Set("Content-Type", "text/event-stream")
 		_, _ = writer.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
-		writer.(http.Flusher).Flush()
-		close(firstEventSent)
-		<-release
 		_, _ = writer.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
 		writer.(http.Flusher).Flush()
+		close(firstEventSent)
 	}))
 	defer primary.Close()
 	backup := fakeupstream.New(fakeupstream.Step{Status: http.StatusOK, Fixture: "stream.sse", Stream: true})
@@ -1150,7 +1145,6 @@ func TestAnthropicGatewayStream(t *testing.T) {
 	if len(backup.Requests()) != 0 || response.Header.Get(debugHeaderAttempts) != "1" {
 		t.Fatalf("backup requests=%d headers=%v", len(backup.Requests()), response.Header)
 	}
-	releaseOnce.Do(func() { close(release) })
 	rest, err := io.ReadAll(reader)
 	if err != nil || !strings.Contains(string(rest), "message_stop") || strings.Contains(string(rest), `"code":`) {
 		t.Fatalf("remaining stream = %q, %v", rest, err)

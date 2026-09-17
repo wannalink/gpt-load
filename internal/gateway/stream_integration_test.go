@@ -919,6 +919,7 @@ func newStreamingGatewayEngine(t *testing.T, groups ...streamGatewayGroup) (*gin
 		nil,
 		nil,
 	)
+	handler.bufferStreams = false
 
 	engine := gin.New()
 	bindGatewayRoutesForTest(t, engine, handler)

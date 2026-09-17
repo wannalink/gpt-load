@@ -454,7 +454,7 @@ func decisionForExecutionCategory(
 		if retryableUpstreamResponse(attempt) {
 			if !requestMayReplayAfterResponse(decisionContext) &&
 				attempt.Evidence.ReplaySafety != execution.ReplaySafetyRejectedBeforeProcessing {
-				return decision(category, origin, scope, RetryNone, EffectNone, "safety.operation_replay_unsafe")
+				return decision(category, origin, scope, RetryNone, EffectNone, ruleID)
 			}
 			if ruleID == "fallback.ambiguous" {
 				ruleID = "fallback.upstream_response"
