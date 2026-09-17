@@ -509,7 +509,7 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 
 	result := e.inner.ExecuteStream(ctx, spec, sink)
 
-	if isHighDemand503(result.StatusCode, nil, result.Error) && !result.ResponseStarted && ctx.Err() == nil {
+	if isHighDemand503(result.StatusCode, nil, result.Error) && ctx.Err() == nil {
 		delay := e.registry.recordModelHighDemand(model, state.now())
 		log.Printf("[gemini-throttle] model %q received 503 high demand: pausing stream for %v before retry", model, delay)
 		if sleepErr := state.sleep(ctx, delay); sleepErr == nil {

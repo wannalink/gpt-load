@@ -228,13 +228,13 @@ func TestInterruptedStreamWith200AutoRetries(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"model-a","choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 	}))
 	defer upstream.Close()
-	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "model-a", dialect.NewSet(dialect.NewOpenAI()),
+	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "gemini-model-a", dialect.NewSet(dialect.NewOpenAI()),
 		dialectGatewayGroup{id: 1, name: "stream-retry", upstreamURL: upstream.URL, apiKeys: []string{"sk-one", "sk-two"}},
 	)
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a","stream":true,"messages":[]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gemini-model-a","stream":true,"messages":[]}`))
 	request.Header.Set("Authorization", "Bearer gl-client")
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, request)
@@ -258,17 +258,17 @@ func TestMidStreamDropAutoRetriesWithNextCandidate(t *testing.T) {
 		if key == "Bearer sk-one" {
 			// Returns 200 OK and 2 chunks, but drops connection abruptly without terminal [DONE]
 			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"model-a","choices":[{"index":0,"delta":{"content":"partial"}}]}`+"\n\n")
+			_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"partial"}}]}`+"\n\n")
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"model-a","choices":[{"index":0,"delta":{"content":"fully recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"fully recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 	}))
 	defer upstream.Close()
-	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "model-a", dialect.NewSet(dialect.NewOpenAI()),
+	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "gemini-model-a", dialect.NewSet(dialect.NewOpenAI()),
 		dialectGatewayGroup{id: 1, name: "stream-retry", upstreamURL: upstream.URL, apiKeys: []string{"sk-one", "sk-two"}},
 	)
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a","stream":true,"messages":[]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gemini-model-a","stream":true,"messages":[]}`))
 	request.Header.Set("Authorization", "Bearer gl-client")
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, request)

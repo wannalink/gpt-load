@@ -1213,7 +1213,7 @@ func (handler *Handler) executeAttempts(
 			ProxyFingerprint:       proxyFingerprint,
 			ForceCredentialRefresh: forceCredentialRefresh,
 			ContinuityKey:          requestAffinity.continuityKey,
-			BufferStream:           handler.bufferStreams,
+			BufferStream:           handler.bufferStreams && (string(selection.Group.ChannelID) == "gemini" || strings.HasPrefix(strings.ToLower(externalModel), "gemini") || strings.HasPrefix(strings.ToLower(optionalModelValue(selection.UpstreamModelID)), "gemini")),
 			OnResponse:             handler.responseBindingObserver(recorder.accessKeyID, selection, ref, prepared.request),
 			OnFirstResponse: func() {
 				recorder.recordFirstResponse()
