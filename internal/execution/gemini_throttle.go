@@ -18,6 +18,10 @@ const GeminiThrottleWindow = 5*time.Minute + 5*time.Second
 // allowed within a single 5-minute sliding window before proactive throttling occurs.
 const GeminiProactiveLimit = 20
 
+// GeminiHighDemandMaxBackoff is the maximum pause duration for Gemini 503 high demand errors.
+// It is capped at 4 minutes to ensure requests and pause queues do not exceed the 5-minute safeguard.
+const GeminiHighDemandMaxBackoff = 4 * time.Minute
+
 // isGeminiThrottledTarget reports whether the attempt targets Google Gemini and
 // is subject to proactive rate limiting and 429 throttling.
 func isGeminiThrottledTarget(spec AttemptSpec) bool {
@@ -279,9 +283,7 @@ func (r *GeminiThrottleRegistry) getModelPauseState(model string) *geminiModelPa
 	}
 	state, exists := r.modelPauses[model]
 	if !exists {
-		state = &geminiModelPauseState{
-			currentDelay: 1 * time.Minute,
-		}
+		state = &geminiModelPauseState{}
 		r.modelPauses[model] = state
 	}
 	return state
@@ -324,12 +326,12 @@ func (r *GeminiThrottleRegistry) recordModelHighDemand(model string, now time.Ti
 	pauseState.mu.Lock()
 	defer pauseState.mu.Unlock()
 
-	if pauseState.currentDelay == 0 || now.Sub(pauseState.lastFailure) > pauseState.currentDelay*2+10*time.Minute {
+	if pauseState.currentDelay == 0 || now.Sub(pauseState.lastFailure) > pauseState.currentDelay*2+GeminiHighDemandMaxBackoff {
 		pauseState.currentDelay = 1 * time.Minute
 	} else {
 		pauseState.currentDelay *= 2
-		if pauseState.currentDelay > 10*time.Minute {
-			pauseState.currentDelay = 10 * time.Minute
+		if pauseState.currentDelay > GeminiHighDemandMaxBackoff {
+			pauseState.currentDelay = GeminiHighDemandMaxBackoff
 		}
 	}
 	pauseState.lastFailure = now
@@ -345,7 +347,8 @@ func (r *GeminiThrottleRegistry) resetModelHighDemand(model string) {
 	pauseState.mu.Lock()
 	defer pauseState.mu.Unlock()
 
-	pauseState.currentDelay = 1 * time.Minute
+	pauseState.currentDelay = 0
+	pauseState.lastFailure = time.Time{}
 	pauseState.pausedUntil = time.Time{}
 }
 

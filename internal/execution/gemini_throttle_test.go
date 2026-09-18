@@ -506,3 +506,48 @@ func TestGeminiModelHighDemandDifferentModelNotPaused(t *testing.T) {
 		t.Fatalf("normal model slept unexpectedly due to other model's pause")
 	}
 }
+
+func TestGeminiModelHighDemandBoundedBackoff(t *testing.T) {
+	registry := NewGeminiThrottleRegistry()
+	baseTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	model := "gemini-3.8-flash"
+
+	// 1st failure -> 1m
+	d1 := registry.recordModelHighDemand(model, baseTime)
+	if d1 != 1*time.Minute {
+		t.Fatalf("expected 1m backoff, got %v", d1)
+	}
+
+	// 2nd failure -> 2m
+	d2 := registry.recordModelHighDemand(model, baseTime.Add(time.Second))
+	if d2 != 2*time.Minute {
+		t.Fatalf("expected 2m backoff, got %v", d2)
+	}
+
+	// 3rd failure -> 4m
+	d3 := registry.recordModelHighDemand(model, baseTime.Add(2*time.Second))
+	if d3 != 4*time.Minute {
+		t.Fatalf("expected 4m backoff, got %v", d3)
+	}
+
+	// 4th failure -> capped at 4m (must never exceed 5m safeguard)
+	d4 := registry.recordModelHighDemand(model, baseTime.Add(3*time.Second))
+	if d4 != 4*time.Minute {
+		t.Fatalf("expected capped 4m backoff, got %v", d4)
+	}
+
+	// 5th failure -> still capped at 4m
+	d5 := registry.recordModelHighDemand(model, baseTime.Add(4*time.Second))
+	if d5 != 4*time.Minute {
+		t.Fatalf("expected capped 4m backoff, got %v", d5)
+	}
+
+	// Reset on success
+	registry.resetModelHighDemand(model)
+
+	// Next failure after reset -> back to 1m
+	d6 := registry.recordModelHighDemand(model, baseTime.Add(5*time.Second))
+	if d6 != 1*time.Minute {
+		t.Fatalf("expected reset to 1m backoff, got %v", d6)
+	}
+}

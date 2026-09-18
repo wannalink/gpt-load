@@ -28,6 +28,10 @@ const GeminiFreeTierQuotaErrorSubstring = "quota exceeded for metric: generative
 // GeminiHighDemandErrorSubstring is the error message indicating high model demand.
 const GeminiHighDemandErrorSubstring = "this model is currently experiencing high demand. spikes in demand are usually temporary. please try again later."
 
+// GeminiHighDemandMaxBackoff is the maximum backoff duration for Gemini 503 high demand errors.
+// It is capped at 4 minutes to stay below the 5-minute request timeout / cancellation safeguard.
+const GeminiHighDemandMaxBackoff = 4 * time.Minute
+
 type geminiBackoffKey struct {
 	groupID uint
 	model   string
@@ -72,13 +76,13 @@ func getNextGeminiBackoff(groupID uint, model string, now time.Time) time.Durati
 	}
 
 	// If a long time has passed since the last failure, reset backoff
-	if now.Sub(state.lastFailure) > state.currentDelay*2+10*time.Minute {
+	if now.Sub(state.lastFailure) > state.currentDelay*2+GeminiHighDemandMaxBackoff {
 		state.currentDelay = 1 * time.Minute
 	} else {
 		// Double the delay
 		state.currentDelay *= 2
-		if state.currentDelay > 10*time.Minute {
-			state.currentDelay = 10 * time.Minute
+		if state.currentDelay > GeminiHighDemandMaxBackoff {
+			state.currentDelay = GeminiHighDemandMaxBackoff
 		}
 	}
 	state.lastFailure = now

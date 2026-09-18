@@ -213,9 +213,18 @@ func TestGeminiHighDemandDecision(t *testing.T) {
 		t.Errorf("CooldownUntil = %v, want %v (doubled)", d3.CooldownUntil, expected3)
 	}
 
-	// Reset decay test -> 4th hit after a long delay (e.g. 1 hour) -> should reset back to 1m
+	// 4th hit (soon after) -> capped at 4m (must never exceed 5m safeguard)
+	attempt3b := attempt
+	attempt3b.Now = attempt3.Now.Add(time.Second)
+	d3b, _ := geminiHighDemandDecision(attempt3b, context)
+	expected3b := attempt3b.Now.Add(4 * time.Minute)
+	if !d3b.CooldownUntil.Equal(expected3b) {
+		t.Errorf("CooldownUntil = %v, want %v (capped at 4m)", d3b.CooldownUntil, expected3b)
+	}
+
+	// Reset decay test -> 5th hit after a long delay (e.g. 1 hour) -> should reset back to 1m
 	attempt4 := attempt
-	attempt4.Now = attempt3.Now.Add(time.Hour)
+	attempt4.Now = attempt3b.Now.Add(time.Hour)
 	d4, _ := geminiHighDemandDecision(attempt4, context)
 	expected4 := attempt4.Now.Add(1 * time.Minute)
 	if !d4.CooldownUntil.Equal(expected4) {
