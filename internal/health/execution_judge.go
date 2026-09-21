@@ -309,7 +309,7 @@ func classifyExecutionEvidence(attempt ExecutionAttempt) FailureCategory {
 
 	switch {
 	case statusCode == http.StatusTooManyRequests || containsAny(markers,
-		"rate_limit", "rate limit", "too_many_requests", "quota_exceeded",
+		"rate_limit", "rate limit", "too_many_requests", "quota_exceeded", "quota exceeded",
 		"resource_exhausted", "throttl"):
 		return FailureCategoryRateLimited
 	case statusCode == http.StatusUnauthorized:
@@ -336,6 +336,12 @@ func decisionForExecutionCategory(
 	attempt ExecutionAttempt,
 	decisionContext DecisionContext,
 ) Decision {
+	if geminiDecision, ok := geminiFreeTierQuotaDecision(attempt); ok {
+		return geminiDecision
+	}
+	if demandDecision, ok := geminiHighDemandDecision(attempt, decisionContext); ok {
+		return demandDecision
+	}
 	if transientCapacity, ok := transientCapacityDecision(attempt); ok {
 		return transientCapacity
 	}
@@ -451,7 +457,7 @@ func decisionForExecutionCategory(
 		if retryableUpstreamResponse(attempt) {
 			if !requestMayReplayAfterResponse(decisionContext) &&
 				attempt.Evidence.ReplaySafety != execution.ReplaySafetyRejectedBeforeProcessing {
-				return decision(category, origin, scope, RetryNone, EffectNone, "safety.operation_replay_unsafe")
+				return decision(category, origin, scope, RetryNone, EffectNone, ruleID)
 			}
 			if ruleID == "fallback.ambiguous" {
 				ruleID = "fallback.upstream_response"
@@ -480,9 +486,22 @@ func retryableUpstreamResponse(attempt ExecutionAttempt) bool {
 	case execution.ErrorKindProvider:
 		switch evidence.Code {
 		case "upstream_protocol_error", "upstream_response_incomplete":
+			if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
+				return true
+			}
 			return false
 		}
 		return attempt.ResponseStarted()
+	case execution.ErrorKindTransport:
+		if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
+			return true
+		}
+		return false
+	case execution.ErrorKindTimeout:
+		if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
+			return true
+		}
+		return false
 	default:
 		return false
 	}

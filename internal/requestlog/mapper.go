@@ -334,7 +334,7 @@ func validateFrozenObservation(event telemetry.RequestEvent) error {
 		return fmt.Errorf("invalid selected upstream model")
 	}
 	if event.UpstreamModel != boundModel ||
-		pricingObservation.UpstreamModel != boundModel {
+		(pricingObservation.UpstreamModel != boundModel && pricingObservation.UpstreamModel != event.UpstreamReportedModel) {
 		return fmt.Errorf("inconsistent bound upstream model")
 	}
 	return nil

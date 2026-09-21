@@ -129,6 +129,19 @@ func collectVisibleModelIDs(
 			}
 		}
 	}
+	for syntheticModel, targets := range snapshot.SyntheticModels {
+		if len(accessKey.Filters.Models) > 0 {
+			if _, ok := accessKey.Filters.Models[syntheticModel]; !ok {
+				continue
+			}
+		}
+		for _, target := range targets {
+			if _, ok := visible[target]; ok {
+				visible[syntheticModel] = struct{}{}
+				break
+			}
+		}
+	}
 	result := make([]string, 0, len(visible))
 	for modelID := range visible {
 		result = append(result, modelID)

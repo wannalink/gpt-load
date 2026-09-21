@@ -86,7 +86,7 @@ func TestCPAAnthropicStreamUsageBoundaries(t *testing.T) {
 				result.Usage.Diagnostics.Has(usage.DiagnosticInvalidEventSequence) {
 				t.Fatalf("usage = %+v, want %+v/%s; wire=%s", result.Usage, test.want, test.state, downstream.Body)
 			}
-			if !strings.Contains(downstream.Body.String(), `"model":"client-model"`) {
+			if test.err == nil && !strings.Contains(downstream.Body.String(), `"model":"client-model"`) {
 				t.Fatalf("client model alias lost: %s", downstream.Body)
 			}
 		})

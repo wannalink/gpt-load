@@ -193,6 +193,7 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		downstreamErr error
 		errorBody     []byte
 		streamUsage   *execution.UsageEvidence
+		bufferedData  [][]byte
 	)
 	sink := func(event execution.StreamEvent) error {
 		if err := event.Validate(); err != nil {
@@ -226,6 +227,12 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 				downstreamErr = fmt.Errorf("%w: execution data arrived before response metadata", ErrUpstreamProtocol)
 				return downstreamErr
 			}
+			if !firstResponse {
+				firstResponse = true
+				if input.OnFirstResponse != nil {
+					input.OnFirstResponse()
+				}
+			}
 			if ready.StatusCode < http.StatusOK || ready.StatusCode >= http.StatusMultipleChoices {
 				errorBody = appendExecutionErrorBody(errorBody, event.Data)
 				return nil
@@ -253,17 +260,19 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 					return nil
 				}
 			}
+			if streamEvents.firstEventWasProviderError() {
+				errorBody = appendExecutionErrorBody(errorBody, forwardData)
+				return nil
+			}
+			if input.BufferStream {
+				bufferedData = append(bufferedData, append([]byte(nil), forwardData...))
+				if terminalInChunk {
+					streamEvents.markTerminalForwarded()
+				}
+				return nil
+			}
+
 			if !committed {
-				if !firstResponse {
-					firstResponse = true
-					if input.OnFirstResponse != nil {
-						input.OnFirstResponse()
-					}
-				}
-				if streamEvents.firstEventWasProviderError() {
-					errorBody = appendExecutionErrorBody(errorBody, forwardData)
-					return nil
-				}
 				committed = true
 				if err := commitStream(controller, ready.StatusCode, ready.Header, forwardData); err != nil {
 					downstreamErr = err
@@ -327,6 +336,55 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 			}
 		}
 	}
+	if downstreamErr == nil && terminal.Error == nil && ready != nil &&
+		ready.StatusCode >= http.StatusOK && ready.StatusCode < http.StatusMultipleChoices &&
+		!streamEvents.firstEventWasProviderError() {
+		if !firstResponse {
+			firstResponse = true
+			if input.OnFirstResponse != nil {
+				input.OnFirstResponse()
+			}
+		}
+		var initialChunk []byte
+		if len(bufferedData) > 0 {
+			initialChunk = bufferedData[0]
+		}
+		committed = true
+		if err := commitStream(controller, ready.StatusCode, ready.Header, initialChunk); err != nil {
+			downstreamErr = err
+		} else {
+			if input.OnStreamReady != nil {
+				input.OnStreamReady()
+			}
+			if len(bufferedData) > 1 {
+				for _, chunk := range bufferedData[1:] {
+					written, err := controller.write(chunk)
+					if err != nil {
+						downstreamErr = &streamFailure{
+							kind: streamFailureDownstreamWrite,
+							err:  fmt.Errorf("write execution stream: %w", err),
+						}
+						break
+					}
+					if written != len(chunk) {
+						downstreamErr = &streamFailure{
+							kind: streamFailureDownstreamWrite,
+							err:  fmt.Errorf("write execution stream: %w", io.ErrShortWrite),
+						}
+						break
+					}
+				}
+			}
+			if downstreamErr == nil {
+				if err := controller.flush(); err != nil {
+					downstreamErr = &streamFailure{
+						kind: streamFailureDownstreamWrite,
+						err:  fmt.Errorf("flush execution stream: %w", err),
+					}
+				}
+			}
+		}
+	}
 	capturedUsage := streamEvents.finalizeUsage()
 	result := upstreamFromExecutionStreamResult(ctx, input, terminal, streamUsage)
 	if input.ObserveUsage && input.ClientProtocol == protocol.Anthropic &&
@@ -353,6 +411,9 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		result.Header = ready.Header.Clone()
 		result.ResponseStarted = true
 		result.UpstreamRequestID = ready.UpstreamRequestID
+		if downstreamErr != nil || terminal.Error != nil {
+			result.Stream = executionStreamObservation(ctx, terminal, downstreamErr, streamEvents)
+		}
 	}
 	if !committed && streamEvents.firstEventWasProviderError() {
 		summary := streamEvents.firstSummary
@@ -774,6 +835,7 @@ func newExecutionAttemptSpec(input ForwardInput) (execution.AttemptSpec, error) 
 		ConfiguredHeaders:        input.Group.HeaderRules.ConfiguredNames(),
 		Body:                     input.Request.Body,
 		IncludeUsage:             input.ObserveUsage,
+		Synthetic:                input.Synthetic,
 		ForceCredentialRefresh:   input.ForceCredentialRefresh,
 		ContinuityKey:            input.ContinuityKey,
 		TargetConfig:             input.TargetConfig,

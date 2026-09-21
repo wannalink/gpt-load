@@ -104,6 +104,7 @@ func TestSSEScannerRecognizesThreeDialectFixtures(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("ReadAll() error = %v", readErr)
 			}
+			body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
 			separator := bytes.Index(body, []byte("\n\n"))
 			if separator < 0 {
 				t.Fatalf("fixture has no complete first event: %q", body)

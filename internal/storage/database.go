@@ -26,7 +26,7 @@ var databaseLogger = newDatabaseLogger(os.Stdout)
 
 func newDatabaseLogger(output io.Writer) logger.Interface {
 	base := logger.New(log.New(output, "\r\n", log.LstdFlags), logger.Config{
-		SlowThreshold:             200 * time.Millisecond,
+		SlowThreshold:             2 * time.Second,
 		LogLevel:                  logger.Warn,
 		IgnoreRecordNotFoundError: true,
 		ParameterizedQueries:      true,
@@ -123,7 +123,7 @@ func openWithSourceAndPool(
 	if err != nil {
 		return nil, err
 	}
-	return openDatabase(database.Driver, dialector, pool)
+	return openDatabase(database.Driver, dialector, database.DSN, pool)
 }
 
 // openDatabase is the shared GORM/SQL lifecycle for every supported driver.
@@ -132,6 +132,7 @@ func openWithSourceAndPool(
 func openDatabase(
 	driver config.DatabaseDriver,
 	dialector gorm.Dialector,
+	dsn string,
 	pool config.DatabasePoolConfig,
 ) (*gorm.DB, error) {
 	db, err := gorm.Open(dialector, &gorm.Config{
@@ -146,7 +147,7 @@ func openDatabase(
 	if err != nil {
 		return nil, fmt.Errorf("get %s connection pool: %w", databaseDisplayName(driver), err)
 	}
-	configureDatabasePool(sqlDB, driver, pool)
+	configureDatabasePool(sqlDB, driver, dsn, pool)
 	if err := sqlDB.PingContext(context.Background()); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping %s database: %w", databaseDisplayName(driver), err)
@@ -157,21 +158,39 @@ func openDatabase(
 func configureDatabasePool(
 	sqlDB *sql.DB,
 	driver config.DatabaseDriver,
+	dsn string,
 	pool config.DatabasePoolConfig,
 ) {
-	maxOpenConnections, maxIdleConnections := databasePoolLimits(driver, pool)
+	maxOpenConnections, maxIdleConnections := databasePoolLimits(driver, dsn, pool)
 	sqlDB.SetMaxOpenConns(maxOpenConnections)
 	sqlDB.SetMaxIdleConns(maxIdleConnections)
 }
 
 func databasePoolLimits(
 	driver config.DatabaseDriver,
+	dsn string,
 	pool config.DatabasePoolConfig,
 ) (int, int) {
 	if driver == config.DatabaseDriverSQLite {
-		// SQLite's single-writer runtime and shared :memory: compatibility both
-		// require one physical connection.
-		return 1, 1
+		if isSQLiteMemoryDSN(dsn) {
+			// SQLite's shared :memory: compatibility requires one physical connection.
+			return 1, 1
+		}
+		// For file-backed SQLite databases, WAL mode allows multiple concurrent readers
+		// and one writer. To handle concurrent reads without pool starvation, we set
+		// a reasonable connection pool size.
+		maxOpen := pool.MaxOpenConnections
+		if maxOpen <= 0 {
+			maxOpen = 10
+		}
+		maxIdle := pool.MaxIdleConnections
+		if maxIdle <= 0 {
+			maxIdle = 2
+		}
+		if maxIdle > maxOpen {
+			maxIdle = maxOpen
+		}
+		return maxOpen, maxIdle
 	}
 	return pool.MaxOpenConnections, pool.MaxIdleConnections
 }

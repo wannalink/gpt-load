@@ -5,6 +5,9 @@
 
 # Binary, build, coverage, temporary, and profiling output
 gpt-load
+gpt-load.exe
+.kilo/
+screenshot/
 build/
 dist/
 node_modules/

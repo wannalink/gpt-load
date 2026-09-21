@@ -79,6 +79,7 @@ type compileRows struct {
 	accessKeys           []models.AccessKey
 	costLimitRules       []models.AccessKeyCostLimitRule
 	clientModelOverrides []models.ClientModelOverride
+	syntheticModels      []models.SyntheticModel
 }
 
 type modelDTO struct {
@@ -314,6 +315,11 @@ func queryCompileRows(ctx context.Context, db *gorm.DB) (compileRows, error) {
 	if err := db.Order("model_hash ASC").Find(&rows.clientModelOverrides).Error; err != nil {
 		return compileRows{}, fmt.Errorf("query client model overrides: %w", err)
 	}
+	if db.Migrator().HasTable("synthetic_models") {
+		if err := db.Order("id ASC").Find(&rows.syntheticModels).Error; err != nil {
+			return compileRows{}, fmt.Errorf("query synthetic models: %w", err)
+		}
+	}
 	return rows, nil
 }
 
@@ -345,6 +351,10 @@ func BuildCompileInput(
 	if err != nil {
 		return state.CompileInput{}, err
 	}
+	input.SyntheticModels, err = mapSyntheticModels(rows.syntheticModels)
+	if err != nil {
+		return state.CompileInput{}, err
+	}
 	return input, nil
 }
 
@@ -367,6 +377,10 @@ func BuildCompileInputWithProxy(
 	input.ChannelRegistry = selectChannelRegistry(registries)
 	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups)
 	input.AccessKeys, err = mapAccessKeys(rows.accessKeys, rows.costLimitRules)
+	if err != nil {
+		return state.CompileInput{}, err
+	}
+	input.SyntheticModels, err = mapSyntheticModels(rows.syntheticModels)
 	if err != nil {
 		return state.CompileInput{}, err
 	}
@@ -504,6 +518,10 @@ func (l *Loader) read(
 	input.ChannelRegistry = l.channelRegistry
 	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups)
 	input.AccessKeys, err = mapAccessKeys(rows.accessKeys, rows.costLimitRules)
+	if err != nil {
+		return state.CompileInput{}, nil, nil, err
+	}
+	input.SyntheticModels, err = mapSyntheticModels(rows.syntheticModels)
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
 	}
@@ -990,4 +1008,24 @@ func stringValue(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func mapSyntheticModels(rows []models.SyntheticModel) ([]state.SyntheticModelConfig, error) {
+	configs := make([]state.SyntheticModelConfig, 0, len(rows))
+	for _, row := range rows {
+		var targetModels []string
+		if len(row.TargetModels) > 0 {
+			if err := json.Unmarshal(row.TargetModels, &targetModels); err != nil {
+				return nil, fmt.Errorf("unmarshal synthetic model %d target models: %w", row.ID, err)
+			}
+		}
+		configs = append(configs, state.SyntheticModelConfig{
+			ID:           row.ID,
+			Name:         row.Name,
+			Description:  row.Description,
+			TargetModels: targetModels,
+			Enabled:      row.Enabled,
+		})
+	}
+	return configs, nil
 }

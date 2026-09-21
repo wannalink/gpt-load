@@ -1942,6 +1942,8 @@ func (panicRuntimeRegistry) SetModelCooldown(state.CredentialRef, string, time.T
 	panic("model endpoint mutated cooldown")
 }
 
+func (panicRuntimeRegistry) SetGroupModelCooldown(uint, string, time.Time, time.Time) {}
+
 func (panicRuntimeRegistry) SchedulingState() *state.SchedulingState {
 	panic("unexpected registry access")
 }

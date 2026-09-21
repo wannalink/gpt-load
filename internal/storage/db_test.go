@@ -487,8 +487,8 @@ func TestOpenOverridesSQLiteRuntimeOptions(t *testing.T) {
 	if !strings.EqualFold(journalMode, "wal") || foreignKeys != 1 || busyTimeout != 5000 {
 		t.Fatalf("runtime = journal:%q foreign_keys:%d busy_timeout:%d", journalMode, foreignKeys, busyTimeout)
 	}
-	if got := sqlDB.Stats().MaxOpenConnections; got != 1 {
-		t.Fatalf("MaxOpenConnections = %d, want 1", got)
+	if got := sqlDB.Stats().MaxOpenConnections; got != 10 {
+		t.Fatalf("MaxOpenConnections = %d, want 10", got)
 	}
 }
 

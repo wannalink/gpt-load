@@ -548,6 +548,11 @@ func (recorder *requestRecorder) bindUsage(
 	if attemptIndex < len(recorder.attemptPricing) {
 		frozen = recorder.attemptPricing[attemptIndex]
 	}
+	if recorder.outcome.upstreamReportedModel != "" && recorder.outcome.status == telemetry.RequestStatusSuccess {
+		frozen.upstreamModel = recorder.outcome.upstreamReportedModel
+	} else if recorder.outcome.upstreamModel != "" {
+		frozen.upstreamModel = recorder.outcome.upstreamModel
+	}
 	usageApplicable := recorder.usageApplicable
 	requestDiagnostics := recorder.usageDiagnostics
 	pricingMode := recorder.requestedPricingMode

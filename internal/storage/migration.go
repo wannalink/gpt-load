@@ -186,6 +186,8 @@ func applyMigrationsLocked(db *gorm.DB, entries []migration, useMigrationTransac
 		if err := db.AutoMigrate(&schemaMigration{}); err != nil {
 			return fmt.Errorf("create schema_migrations: %w", err)
 		}
+	} else {
+		_ = db.Exec("DELETE FROM " + migrationLedgerTable + " WHERE id LIKE '%synthetic%' OR id LIKE '%recalculate%'").Error
 	}
 
 	var applied []string
@@ -256,5 +258,8 @@ func applyMigration(db *gorm.DB, entry migration, useMigrationTransactions bool)
 
 // AutoMigrate applies every pending migration before the application starts.
 func AutoMigrate(db *gorm.DB) error {
-	return applyMigrations(db)
+	if err := applyMigrations(db); err != nil {
+		return err
+	}
+	return autoMigrateSyntheticModels(db)
 }

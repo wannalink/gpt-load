@@ -28,6 +28,28 @@ func (r *CredentialRegistry) SetModelCooldown(ref CredentialRef, model string, u
 	return true, true
 }
 
+func (r *CredentialRegistry) SetGroupModelCooldown(groupID uint, model string, until, now time.Time) {
+	if groupID == 0 || model == "" || strings.TrimSpace(model) != model || !until.After(now) {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	groupBucket, ok := r.buckets[groupID]
+	if !ok {
+		return
+	}
+	for _, entry := range groupBucket {
+		pruneModelCooldowns(entry.ModelCooldowns, now)
+		if !until.After(entry.ModelCooldowns[model]) {
+			continue
+		}
+		if entry.ModelCooldowns == nil {
+			entry.ModelCooldowns = make(map[string]time.Time)
+		}
+		entry.ModelCooldowns[model] = until
+	}
+}
+
 func (r *CredentialRegistry) ModelCooldowns(credentialID uint, now time.Time) map[string]time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()

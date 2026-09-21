@@ -250,6 +250,8 @@ type AttemptSpec struct {
 	// IncludeUsage asks the executor to request provider usage details when the
 	// selected operation supports an explicit wire option.
 	IncludeUsage bool `json:"include_usage,omitempty"`
+	// Synthetic indicates this attempt is part of a synthetic model fallback chain.
+	Synthetic bool `json:"synthetic,omitempty"`
 	// ForceCredentialRefresh is set only by GPT-Load after a provider explicitly
 	// rejects this selected subscription credential before processing.
 	ForceCredentialRefresh bool `json:"force_credential_refresh,omitempty"`

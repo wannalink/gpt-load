@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +83,7 @@ type runtimeCredentialRegistry interface {
 	SetCooldownWithChange(credentialID uint, until time.Time) (exists bool, changed bool)
 	SetCooldownWithChangeIfVersion(credentialID uint, expectedVersion uint64, until time.Time) (matched bool, changed bool)
 	SetModelCooldown(state.CredentialRef, string, time.Time, time.Time) (bool, bool)
+	SetGroupModelCooldown(groupID uint, model string, until time.Time, now time.Time)
 	IncrFailure(credentialID uint) (int, bool)
 	SetBlacklistedWithChange(credentialID uint) (exists bool, changed bool)
 	ClearFailure(credentialID uint) bool
@@ -117,6 +119,7 @@ type Handler struct {
 	responseBindings    *state.ResponseBindings
 	websocketLimits     websocketLimits
 	websocketBudget     websocketBudget
+	bufferStreams       bool
 }
 
 func (handler *Handler) freezeAttemptPricing(
@@ -167,6 +170,10 @@ func NewHandler(
 	manager.SetSchedulingState(registry.SchedulingState())
 	channels := channel.NewRegistry()
 	subscriptions, _ := subscriptionruntime.NewRuntime(channels, subscriptionproviders.Implementations()...)
+	bufferStreams := true
+	if val := os.Getenv("GPT_LOAD_BUFFER_STREAMS"); val == "false" || val == "0" {
+		bufferStreams = false
+	}
 	handler := &Handler{
 		manager: manager, channels: channels, subscriptions: subscriptions, registry: registry, encryption: encryptionService,
 		forwarder: forwarder, dialects: dialects, stats: stats, mutations: mutations,
@@ -174,6 +181,7 @@ func NewHandler(
 		affinityCache:    affinity.NewCache(),
 		responseBindings: state.NewResponseBindings(),
 		websocketLimits:  defaultWebsocketLimits(),
+		bufferStreams:    bufferStreams,
 		newRequestID:     newRequestID,
 		requestNow:       time.Now,
 		now:              time.Now,
@@ -284,6 +292,14 @@ func (handler *Handler) applyGroupDecisionEffect(
 	attemptNow time.Time,
 	model string,
 ) {
+	if decision.Effect == health.EffectCooldownModel && decision.RuleID == "gemini.high_demand_model_cooldown" {
+		handler.registry.SetGroupModelCooldown(group.ID, model, decision.CooldownUntil, attemptNow)
+		utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
+			logrus.Fields{"event": "model_cooldown", "group_id": group.ID, "model": model,
+				"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown (high demand)")
+		return
+	}
+
 	handler.applyDecisionEffectWithBlacklistPolicy(
 		ref,
 		credentialVersion,
@@ -567,6 +583,16 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		handler.completeReason(ginContext, recorder, reasonInvalidProtocolRequest)
 		return
 	}
+
+	if len(body) > 1<<20 { // larger than 1MB
+		utils.LogPlaneBestEffort(
+			handler.logger,
+			logrus.InfoLevel,
+			utils.LogPlaneData,
+			logrus.Fields{"request_id": requestID, "size_bytes": len(body)},
+			"Handling exceptionally large request body before unmarshaling",
+		)
+	}
 	requestHeaders := ginContext.Request.Header.Clone()
 	platformheader.StripRepresentationMetadata(requestHeaders)
 	parsed := &dialect.ParsedRequest{
@@ -673,11 +699,18 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		)
 		query.PreferredCredentialID = requestAffinity.preferredCredentialID
 	}
+	forwardAttemptLimit := retryAttemptLimit(snapshot.Settings.RetryCount)
+	if targets, ok := snapshot.SyntheticModels[model]; ok && len(targets) > 0 {
+		forwardAttemptLimit = len(targets) * forwardAttemptLimit
+		if forwardAttemptLimit < 50 {
+			forwardAttemptLimit = 50
+		}
+	}
 	iterator := scheduler.New(snapshot, handler.registry, query)
 	handler.executeAttempts(
 		ginContext,
 		iterator,
-		retryAttemptLimit(snapshot.Settings.RetryCount),
+		forwardAttemptLimit,
 		allowedCredentialRefs,
 		selectedDialect,
 		parsed,
@@ -861,6 +894,7 @@ func (handler *Handler) executeAttempts(
 ) {
 	stream := originalMetadata.Stream
 	operation := originalMetadata.Operation
+	isSynthetic := isSyntheticModelRequest(iterator.Snapshot(), externalModel)
 	type deferredAttempt struct {
 		result        UpstreamResult
 		decision      health.Decision
@@ -965,6 +999,9 @@ func (handler *Handler) executeAttempts(
 			CredentialRefreshable:    credentialRefreshable,
 			Method:                   method,
 			Operation:                operation,
+			CredentialID:             selection.CredentialID,
+			GroupID:                  selection.GroupID,
+			Model:                    optionalModelValue(selection.UpstreamModelID),
 		}
 	}
 	recordCandidatePreparationFailure := func(
@@ -1231,6 +1268,8 @@ func (handler *Handler) executeAttempts(
 			ProxyFingerprint:       proxyFingerprint,
 			ForceCredentialRefresh: forceCredentialRefresh,
 			ContinuityKey:          requestAffinity.continuityKey,
+			BufferStream:           handler.bufferStreams && (string(selection.Group.ChannelID) == "gemini" || strings.HasPrefix(strings.ToLower(externalModel), "gemini") || strings.HasPrefix(strings.ToLower(optionalModelValue(selection.UpstreamModelID)), "gemini")),
+			Synthetic:              isSynthetic,
 			OnResponse:             handler.responseBindingObserver(recorder.accessKeyID, selection, ref, prepared.request, recorder.autoSelection()),
 			OnFirstResponse: func() {
 				recorder.recordFirstResponse()
@@ -1308,6 +1347,7 @@ func (handler *Handler) executeAttempts(
 			)
 			if stream && result.Stream.EndReason == StreamEndCleanEOF {
 				handler.recordCredentialSuccess(ref, attemptNow)
+				health.ResetGeminiBackoff(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
 				if originalMetadata.PreviousResponseID == "" {
 					handler.recordAffinitySuccess(requestAffinity, selection, ref)
 				}
@@ -1336,6 +1376,7 @@ func (handler *Handler) executeAttempts(
 			result.StatusCode >= http.StatusOK &&
 			result.StatusCode < http.StatusMultipleChoices {
 			handler.recordCredentialSuccess(ref, attemptNow)
+			health.ResetGeminiBackoff(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
 		}
 		recordedAttempt := recorder.recordAttempt(
 			selection, normalizedCredential.secrets, result, decision, attemptStarted, attemptCompleted,
@@ -1369,7 +1410,7 @@ func (handler *Handler) executeAttempts(
 			return
 		}
 		if result.ProviderErrorBeforeCommit {
-			if decision.Retry != health.RetryNone {
+			if decision.Retry != health.RetryNone || (isSynthetic && !isExplicitTokenLimitRejection(result)) {
 				lastProviderError = &deferredAttempt{
 					result:        result,
 					decision:      decision,
@@ -1397,7 +1438,7 @@ func (handler *Handler) executeAttempts(
 			lastResponse = &deferredAttempt{
 				result: result, decision: decision, upstreamModel: optionalModelValue(selection.UpstreamModelID), attemptIndex: recordedAttempt,
 			}
-			if decision.Retry != health.RetryNone {
+			if decision.Retry != health.RetryNone || (isSynthetic && result.StatusCode >= 400 && !isExplicitTokenLimitRejection(result)) {
 				recorder.retryIfAnotherForward(recordedAttempt)
 				continue
 			}
@@ -1417,7 +1458,7 @@ func (handler *Handler) executeAttempts(
 			recorder.completeCanceled(ginContext.Request.Context(), 0, recordedAttempt)
 			return
 		}
-		if decision.Retry != health.RetryNone {
+		if decision.Retry != health.RetryNone || isSynthetic {
 			deferred := &deferredAttempt{
 				result: result, decision: decision, upstreamModel: optionalModelValue(selection.UpstreamModelID), attemptIndex: recordedAttempt,
 			}
@@ -1434,6 +1475,11 @@ func (handler *Handler) executeAttempts(
 		if err := handler.writeReason(ginContext, value); err != nil {
 			handler.completeWriteTerminal(ginContext, recorder, value.Status)
 		}
+		return
+	}
+
+	if isSynthetic {
+		handler.completeReason(ginContext, recorder, reasonNoCandidate)
 		return
 	}
 

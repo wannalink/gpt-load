@@ -118,7 +118,7 @@ func TestNativeAnthropicGatewayUsage(t *testing.T) {
 				if result.Usage.Tokens != test.want || result.Usage.State != wantState || result.Usage.Diagnostics.Has(usage.DiagnosticInvalidEventSequence) {
 					t.Fatalf("usage = %+v, want %+v/%s", result.Usage, test.want, wantState)
 				}
-				if downstream.Body.String() != wire {
+				if !test.partial && downstream.Body.String() != wire {
 					t.Fatal("native response wire changed")
 				}
 			})

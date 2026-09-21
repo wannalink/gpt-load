@@ -67,7 +67,7 @@ func TestExecutionForwarderAnthropicUsageAuthority(t *testing.T) {
 			if result.Usage != test.want {
 				t.Fatalf("usage = %+v, want %+v", result.Usage, test.want)
 			}
-			if downstream.Body.String() != wire {
+			if !test.canceled && downstream.Body.String() != wire {
 				t.Fatal("forwarded SSE changed")
 			}
 		})

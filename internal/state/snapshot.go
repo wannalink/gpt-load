@@ -33,6 +33,7 @@ type CompileInput struct {
 	Credentials          []CredentialConfig
 	AccessKeys           []AccessKeyConfig
 	ClientModelOverrides map[string]catalog.ClientModelOverrides
+	SyntheticModels      []SyntheticModelConfig
 	GlobalProxy          *outboundproxy.Config
 	EnvironmentProxy     *outboundproxy.Config
 }
@@ -199,6 +200,7 @@ type ConfigSnapshot struct {
 	GroupCatalog          map[uint]GroupCatalogView
 	AccessKeysByID        map[uint]AccessKeyView
 	ClientModelOverrides  map[string]catalog.ClientModelOverrides
+	SyntheticModels       map[string][]string
 	GlobalProxy           outboundproxy.Effective
 }
 
@@ -327,6 +329,9 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 
 	sortExecutionRouteIndex(snapshot.ExecutionCandidates)
 	sortExecutionRouteIndex(snapshot.ExecutionRouteCatalog)
+	if err := compileSyntheticModels(snapshot, input.SyntheticModels); err != nil {
+		return nil, err
+	}
 	return snapshot, nil
 }
 

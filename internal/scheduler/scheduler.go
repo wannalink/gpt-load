@@ -68,6 +68,7 @@ type Iterator struct {
 	progress              *state.SchedulingState
 	regular               candidatePool
 	storeDowngraded       candidatePool
+	priorityTiers         []priorityTier
 	routeModeTiers        [][]channel.RouteMode
 	allowedCredentialIDs  map[uint]struct{}
 	preferredCredentialID uint
@@ -99,21 +100,23 @@ func CandidateGroupIDsForQuery(snapshot *state.ConfigSnapshot, query Query) []ui
 	if snapshot == nil {
 		return nil
 	}
-	decisions, _, err := evaluateTargets(
-		snapshot,
-		snapshot.ExecutionCandidates,
-		normalizeQuery(query),
-	)
-	if err != nil {
-		return []uint{}
-	}
-	groupIDs := make([]uint, 0, len(decisions))
-	for _, decision := range decisions {
-		if decision.included {
-			groupIDs = append(groupIDs, decision.target.GroupID)
+	if targetModels, ok := isSyntheticModel(snapshot, query); ok {
+		seen := make(map[uint]struct{})
+		var groupIDs []uint
+		for _, targetModel := range targetModels {
+			q := query
+			model := targetModel
+			q.ExternalModel = &model
+			for _, gID := range candidateGroupIDsForSingleModel(snapshot, q) {
+				if _, exists := seen[gID]; !exists {
+					seen[gID] = struct{}{}
+					groupIDs = append(groupIDs, gID)
+				}
+			}
 		}
+		return groupIDs
 	}
-	return groupIDs
+	return candidateGroupIDsForSingleModel(snapshot, query)
 }
 
 func newWithClock(
@@ -144,16 +147,59 @@ func newWithClock(
 	if snapshot != nil && snapshot.Settings.RouteStrategy == state.RouteStrategyWeightedMix {
 		iterator.routeModeTiers = [][]channel.RouteMode{{channel.RouteNative, channel.RouteConverted}}
 	}
-	targets, staticReason := filterTargetsWithReason(snapshot, query)
-	iterator.staticReason = staticReason
-	for _, target := range targets {
-		pool := &iterator.regular
-		if target.responsesStoreDowngraded {
-			pool = &iterator.storeDowngraded
+	if targetModels, ok := isSyntheticModel(snapshot, query); ok {
+		iterator.priorityTiers = make([]priorityTier, 0, len(targetModels))
+		for _, targetModel := range targetModels {
+			q := query
+			m := targetModel
+			q.ExternalModel = &m
+			targets, reason := filterTargetsWithReason(snapshot, q)
+			if iterator.staticReason == "" && reason != "" {
+				iterator.staticReason = reason
+			}
+			tier := priorityTier{
+				regular:         newCandidatePool(),
+				storeDowngraded: newCandidatePool(),
+				tried:           make(map[uint]struct{}),
+			}
+			for _, target := range targets {
+				pool := &tier.regular
+				if target.responsesStoreDowngraded {
+					pool = &tier.storeDowngraded
+				}
+				mode := target.target.Mode
+				pool.targetsByGroup[target.target.GroupID] = target
+				pool.groupIDsByMode[mode] = append(pool.groupIDsByMode[mode], target.target.GroupID)
+			}
+			if len(targets) > 0 {
+				iterator.staticReason = ""
+			}
+			iterator.priorityTiers = append(iterator.priorityTiers, tier)
 		}
-		mode := target.target.Mode
-		pool.targetsByGroup[target.target.GroupID] = target
-		pool.groupIDsByMode[mode] = append(pool.groupIDsByMode[mode], target.target.GroupID)
+		if len(iterator.priorityTiers) > 0 {
+			iterator.regular = iterator.priorityTiers[0].regular
+			iterator.storeDowngraded = iterator.priorityTiers[0].storeDowngraded
+		}
+	} else {
+		tier := priorityTier{
+			regular:         newCandidatePool(),
+			storeDowngraded: newCandidatePool(),
+			tried:           make(map[uint]struct{}),
+		}
+		targets, staticReason := filterTargetsWithReason(snapshot, query)
+		iterator.staticReason = staticReason
+		for _, target := range targets {
+			pool := &tier.regular
+			if target.responsesStoreDowngraded {
+				pool = &tier.storeDowngraded
+			}
+			mode := target.target.Mode
+			pool.targetsByGroup[target.target.GroupID] = target
+			pool.groupIDsByMode[mode] = append(pool.groupIDsByMode[mode], target.target.GroupID)
+		}
+		iterator.regular = tier.regular
+		iterator.storeDowngraded = tier.storeDowngraded
+		iterator.priorityTiers = []priorityTier{tier}
 	}
 	return iterator
 }
@@ -163,6 +209,13 @@ func newCandidatePool() candidatePool {
 		targetsByGroup: make(map[uint]candidateTarget),
 		groupIDsByMode: make(map[channel.RouteMode][]uint),
 	}
+}
+
+func (iterator *Iterator) Snapshot() *state.ConfigSnapshot {
+	if iterator == nil {
+		return nil
+	}
+	return iterator.snapshot
 }
 
 func (iterator *Iterator) StaticReason() ReasonCode {
@@ -213,11 +266,26 @@ func (iterator *Iterator) weightedPoolForMode(
 }
 
 func (iterator *Iterator) withWeightedPool(candidates *candidatePool, modes []channel.RouteMode, now time.Time, fn func([]weightedCredential)) {
+	iterator.withWeightedPoolForTier(nil, candidates, modes, now, fn)
+}
+
+func (iterator *Iterator) withWeightedPoolForTier(tier *priorityTier, candidates *candidatePool, modes []channel.RouteMode, now time.Time, fn func([]weightedCredential)) {
 	var groupIDs []uint
 	for _, mode := range modes {
 		groupIDs = append(groupIDs, candidates.groupIDsByMode[mode]...)
 	}
-	excluded := func(id uint) bool { _, tried := iterator.tried[id]; return tried }
+	excluded := func(id uint) bool {
+		if tier != nil {
+			if _, tried := tier.tried[id]; tried {
+				return true
+			}
+		} else {
+			if _, tried := iterator.tried[id]; tried {
+				return true
+			}
+		}
+		return false
+	}
 	consume := func(pool []state.CredentialMeta) {
 		weighted := make([]weightedCredential, 0, len(pool))
 		for _, credential := range pool {
@@ -262,18 +330,22 @@ func (iterator *Iterator) Next() (Selection, error) {
 	if iterator == nil || iterator.credentials == nil || iterator.progress == nil || iterator.now == nil {
 		return Selection{}, ErrExhausted
 	}
-	for _, pool := range []*candidatePool{&iterator.regular, &iterator.storeDowngraded} {
-		for _, modes := range iterator.routeModeTiers {
-			var selected state.CredentialMeta
-			var found bool
-			iterator.withWeightedPool(pool, modes, iterator.now(), func(weighted []weightedCredential) {
-				selected, found = iterator.selectCredential(weighted, iterator.preferredCredentialID)
-			})
-			if !found {
-				continue
+	for tierIdx := 0; tierIdx < len(iterator.priorityTiers); tierIdx++ {
+		tier := &iterator.priorityTiers[tierIdx]
+		for _, pool := range []*candidatePool{&tier.regular, &tier.storeDowngraded} {
+			for _, modes := range iterator.routeModeTiers {
+				var selected state.CredentialMeta
+				var found bool
+				iterator.withWeightedPoolForTier(tier, pool, modes, iterator.now(), func(weighted []weightedCredential) {
+					selected, found = iterator.selectCredential(weighted, iterator.preferredCredentialID)
+				})
+				if !found {
+					continue
+				}
+				tier.tried[selected.ID] = struct{}{}
+				iterator.tried[selected.ID] = struct{}{}
+				return newSelection(selected, pool.targetsByGroup[selected.GroupID]), nil
 			}
-			iterator.tried[selected.ID] = struct{}{}
-			return newSelection(selected, pool.targetsByGroup[selected.GroupID]), nil
 		}
 	}
 	return Selection{}, ErrExhausted

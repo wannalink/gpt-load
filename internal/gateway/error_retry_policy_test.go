@@ -164,7 +164,7 @@ func TestConvertedStreamHTTPErrorRetriesBeforeOutput(t *testing.T) {
 	}{
 		{name: "server error skips failed group", status: 503, wantAttempts: "sk-one,sk-next"},
 		{name: "unknown rejection switches credential", status: 403, wantAttempts: "sk-one,sk-two"},
-		{name: "server error after output stops", status: 503, partial: true, wantAttempts: "sk-one"},
+		{name: "server error after output stops", status: 503, partial: true, wantAttempts: "sk-one,sk-next"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -206,13 +206,76 @@ func TestConvertedStreamHTTPErrorRetriesBeforeOutput(t *testing.T) {
 				t.Fatalf("attempts=%v, want %s; status=%d body=%s", attempts, test.wantAttempts, response.Code, response.Body.String())
 			}
 			body := response.Body.String()
-			if test.partial {
-				if !strings.Contains(body, "partial") || strings.Contains(body, "recovered") {
-					t.Fatalf("committed stream response=%s", body)
-				}
-			} else if response.Code != http.StatusOK || !strings.Contains(body, "recovered") || strings.Contains(body, "first candidate failed") {
+			if response.Code != http.StatusOK || !strings.Contains(body, "recovered") || strings.Contains(body, "first candidate failed") {
 				t.Fatalf("retry response=%d %s", response.Code, body)
 			}
 		})
+	}
+}
+
+func TestInterruptedStreamWith200AutoRetries(t *testing.T) {
+	var mu sync.Mutex
+	var attempts []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Authorization")
+		mu.Lock()
+		attempts = append(attempts, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if key == "Bearer sk-one" {
+			// Returns 200 OK headers, but drops connection without any data chunks
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "gemini-model-a", dialect.NewSet(dialect.NewOpenAI()),
+		dialectGatewayGroup{id: 1, name: "stream-retry", upstreamURL: upstream.URL, apiKeys: []string{"sk-one", "sk-two"}},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gemini-model-a","stream":true,"messages":[]}`))
+	request.Header.Set("Authorization", "Bearer gl-client")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	mu.Lock()
+	defer mu.Unlock()
+	if response.Code != http.StatusOK || fmt.Sprint(attempts) != "[Bearer sk-one Bearer sk-two]" ||
+		!strings.Contains(response.Body.String(), "recovered") {
+		t.Fatalf("status=%d attempts=%v body=%s", response.Code, attempts, response.Body.String())
+	}
+}
+
+func TestMidStreamDropAutoRetriesWithNextCandidate(t *testing.T) {
+	var mu sync.Mutex
+	var attempts []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Authorization")
+		mu.Lock()
+		attempts = append(attempts, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if key == "Bearer sk-one" {
+			// Returns 200 OK and 2 chunks, but drops connection abruptly without terminal [DONE]
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"partial"}}]}`+"\n\n")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"fully recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "gemini-model-a", dialect.NewSet(dialect.NewOpenAI()),
+		dialectGatewayGroup{id: 1, name: "stream-retry", upstreamURL: upstream.URL, apiKeys: []string{"sk-one", "sk-two"}},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gemini-model-a","stream":true,"messages":[]}`))
+	request.Header.Set("Authorization", "Bearer gl-client")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	mu.Lock()
+	defer mu.Unlock()
+	if response.Code != http.StatusOK || fmt.Sprint(attempts) != "[Bearer sk-one Bearer sk-two]" ||
+		!strings.Contains(response.Body.String(), "fully recovered") {
+		t.Fatalf("status=%d attempts=%v body=%s", response.Code, attempts, response.Body.String())
 	}
 }
