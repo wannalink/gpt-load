@@ -12,7 +12,7 @@ func usageRequestLogScope(db *gorm.DB, input UsageQuery, groupIDs ...uint) *gorm
 	logs := db.Session(&gorm.Session{NewDB: true}).Model(&models.RequestLog{}).
 		Where("completed_at_ms >= ? AND completed_at_ms < ?", input.FromMS, input.ToMS).
 		Where("attempt_count > 0").
-		Where("NOT (group_id = ? AND upstream_model = ?)", 0, "").
+		Where("NOT (group_id = ? AND (CASE WHEN upstream_reported_model IS NOT NULL AND upstream_reported_model <> '' THEN upstream_reported_model ELSE upstream_model END) = ?)", 0, "").
 		Where("operation <> ?", string(execution.OperationWebSearch))
 	if len(groupIDs) > 0 {
 		logs = logs.Where("group_id IN ?", groupIDs)
@@ -30,7 +30,7 @@ func usageRequestLogScope(db *gorm.DB, input UsageQuery, groupIDs ...uint) *gorm
 		logs = logs.Where("access_key_id = ?", *input.AccessKeyID)
 	}
 	if input.UpstreamModel != "" {
-		logs = logs.Where("upstream_model = ?", input.UpstreamModel)
+		logs = logs.Where("(CASE WHEN upstream_reported_model IS NOT NULL AND upstream_reported_model <> '' THEN upstream_reported_model ELSE upstream_model END) = ?", input.UpstreamModel)
 	}
 	projection := logs.Select(usageRequestLogProjection, UsageFiveMinuteBucketMS, UsageFiveMinuteBucketMS)
 	return db.Session(&gorm.Session{NewDB: true}).Table("(? UNION ALL ?) AS usage_rows", projection, decisionRequestScope(db, input, groupIDs...))
@@ -40,7 +40,7 @@ func usageRequestLogScope(db *gorm.DB, input UsageQuery, groupIDs ...uint) *gorm
 // missing/not_applicable 不累加 Token，missing 也不计入可报价用量的 unpriced 数量。
 const usageRequestLogProjection = `
 	completed_at_ms - completed_at_ms % ? AS bucket_start_ms,
-	group_id, access_key_id, upstream_model AS model,
+	group_id, access_key_id, CASE WHEN upstream_reported_model IS NOT NULL AND upstream_reported_model <> '' THEN upstream_reported_model ELSE upstream_model END AS model,
 	1 AS request_count,
 	CASE WHEN status = 'success' THEN 1 ELSE 0 END AS success_count,
 	CASE WHEN status IN ('error', 'incomplete', 'canceled') THEN 1 ELSE 0 END AS failure_count,
