@@ -20,7 +20,7 @@ func autoMigrateSyntheticModels(db *gorm.DB) error {
 	}
 
 	if db.Migrator().HasTable("system_settings") {
-		_ = db.Exec("DELETE FROM system_settings WHERE key = 'fork_upstream_usage_recalc_v1'").Error
+		_ = db.Where(&models.SystemSetting{Key: "fork_upstream_usage_recalc_v1"}).Delete(&models.SystemSetting{}).Error
 	}
 
 	return nil
