@@ -23,11 +23,13 @@ import (
 	"gpt-load/internal/pricing"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/requestaudit"
+	"gpt-load/internal/requestredact"
 )
 
 const maxSafeAccessKeyEpochMS = int64(9_007_199_254_740_991)
 
 type CompileInput struct {
+	RequestRedaction     []requestredact.Rule
 	Jev                  *jev.Config
 	RequestAudit         *requestaudit.Config
 	AutoModel            *automodel.Config
@@ -194,6 +196,7 @@ type AccessKeyView struct {
 }
 
 type ConfigSnapshot struct {
+	RequestRedaction      *requestredact.Compiled
 	Jev                   jev.Config
 	RequestAudit          requestaudit.Config
 	AutoModels            *automodel.Compiled
@@ -215,6 +218,10 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 		return nil, err
 	}
 	runtimeSettings, err := ResolveRuntimeSettings(input.SystemSettings)
+	if err != nil {
+		return nil, err
+	}
+	redaction, err := requestredact.Compile(input.RequestRedaction)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +306,8 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 	}
 
 	snapshot := &ConfigSnapshot{
-		Jev: shared, RequestAudit: audit,
+		RequestRedaction: redaction,
+		Jev:              shared, RequestAudit: audit,
 		AutoModels:            autoModels,
 		Settings:              runtimeSettings,
 		ExecutionCandidates:   make(ExecutionCandidateIndex),
