@@ -16,6 +16,7 @@ import (
 	"gpt-load/internal/execution"
 	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/platform/contentcoding"
+	"gpt-load/internal/platform/encryption"
 	platformheader "gpt-load/internal/platform/httpheader"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
@@ -31,6 +32,7 @@ type ForwardInput struct {
 	Group             state.GroupView
 	APIKey            string
 	CredentialSecrets []string
+	RedactionCipher   encryption.RedactionCipher
 	Request           *dialect.ParsedRequest
 	ExternalModel     string
 	UpstreamModelID   string
@@ -59,6 +61,9 @@ type ForwardInput struct {
 	// ContinuityKey is an opaque per-tenant replay boundary for provider-private
 	// thinking and tool state. It never crosses the gateway DTO boundary.
 	ContinuityKey string
+	// EmptyResponseRetry 启用空回检测：提交前压住尚无产出的前导事件，
+	// 使「上游正常完成但没有内容」仍可换候选重试。
+	EmptyResponseRetry bool
 	// BufferStream buffers the entire stream before committing to downstream,
 	// allowing auto-retry if the stream terminates prematurely.
 	BufferStream bool
@@ -81,6 +86,7 @@ type UpstreamResult struct {
 	RequestWritten            bool
 	Committed                 bool
 	ProviderErrorBeforeCommit bool
+	EmptyResponseBeforeCommit bool
 	Stream                    StreamObservation
 	Usage                     usage.Result
 	DispatchState             execution.DispatchState
@@ -439,6 +445,7 @@ func sanitizeForwardResponseHeaders(
 			strings.HasPrefix(strings.ToLower(actualName), "x-upstream-") ||
 			strings.EqualFold(actualName, "Set-Cookie") ||
 			strings.EqualFold(actualName, "Set-Cookie2") ||
+			headerValuesContainLiteral(values, "gld1_") ||
 			headerValuesContainLiteral(values, input.APIKey)
 		for _, secret := range append(append([]string(nil), input.CredentialSecrets...), additionalSecrets...) {
 			if deleteField || secret == "" || secret == input.APIKey {

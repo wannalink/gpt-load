@@ -167,6 +167,7 @@ type GroupView struct {
 	BlacklistThreshold        int
 	AffinityEnabled           bool
 	ResponsesWebsocketEnabled bool
+	EmptyResponseRetry        bool
 	WeightManual              *int
 	Proxy                     outboundproxy.Effective
 	ParameterOverrides        parameteroverride.Rules
@@ -355,6 +356,7 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 			BlacklistThreshold:        resolved.BlacklistThreshold,
 			AffinityEnabled:           resolved.AffinityEnabled,
 			ResponsesWebsocketEnabled: resolved.ResponsesWebsocketEnabled,
+			EmptyResponseRetry:        resolved.EmptyResponseRetry,
 			WeightManual:              cloneWeight(group.WeightManual),
 			ConnectionType:            connection.Normalize(group.ConnectionType),
 			Proxy:                     groupProxy,
