@@ -60,7 +60,7 @@ func openSQLite(
 	if err != nil {
 		return nil, err
 	}
-	db, err := openDatabase(config.DatabaseDriverSQLite, dialector, runtimeDSN, pool)
+	db, err := openDatabase(config.DatabaseDriverSQLite, dialector, pool)
 	if err != nil {
 		return nil, err
 	}

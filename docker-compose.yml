@@ -1,9 +1,9 @@
 services:
   gpt-load:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # image: ghcr.io/tbphp/gpt-load:2
+    image: ghcr.io/tbphp/gpt-load:2
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     # Voice relay: add -f docker-compose.voice.yml (see README).
     ports:
       - "${BIND_ADDRESS:-${HOST:-127.0.0.1}}:${PORT:-3001}:${PORT:-3001}"

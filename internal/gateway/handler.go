@@ -603,16 +603,6 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		handler.completeReason(ginContext, recorder, reasonInvalidProtocolRequest)
 		return
 	}
-
-	if len(body) > 1<<20 { // larger than 1MB
-		utils.LogPlaneBestEffort(
-			handler.logger,
-			logrus.InfoLevel,
-			utils.LogPlaneData,
-			logrus.Fields{"request_id": requestID, "size_bytes": len(body)},
-			"Handling exceptionally large request body before unmarshaling",
-		)
-	}
 	requestHeaders := ginContext.Request.Header.Clone()
 	platformheader.StripRepresentationMetadata(requestHeaders)
 	parsed := &dialect.ParsedRequest{
@@ -721,19 +711,12 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		)
 		query.PreferredCredentialID = requestAffinity.preferredCredentialID
 	}
-	forwardAttemptLimit := retryAttemptLimit(snapshot.Settings.RetryCount)
-	if targets, ok := snapshot.SyntheticModels[model]; ok && len(targets) > 0 {
-		forwardAttemptLimit = len(targets) * forwardAttemptLimit
-		if forwardAttemptLimit < 50 {
-			forwardAttemptLimit = 50
-		}
-	}
 	iterator := scheduler.New(snapshot, handler.registry, query)
 	handler.executeAttempts(
 		ginContext,
 		snapshot,
 		iterator,
-		forwardAttemptLimit,
+		forwardAttemptLimitForModel(snapshot, model),
 		allowedCredentialRefs,
 		selectedDialect,
 		parsed,
@@ -1487,7 +1470,7 @@ func (handler *Handler) executeAttempts(
 			return
 		}
 		if result.ProviderErrorBeforeCommit {
-			if decision.Retry != health.RetryNone || (isSynthetic && !isExplicitTokenLimitRejection(result)) {
+			if shouldRetrySyntheticProviderError(decision, isSynthetic, result) {
 				lastProviderError = &deferredAttempt{
 					result:        result,
 					decision:      decision,
@@ -1515,7 +1498,7 @@ func (handler *Handler) executeAttempts(
 			lastResponse = &deferredAttempt{
 				result: result, decision: decision, upstreamModel: optionalModelValue(selection.UpstreamModelID), attemptIndex: recordedAttempt,
 			}
-			if decision.Retry != health.RetryNone || (isSynthetic && result.StatusCode >= 400 && !isExplicitTokenLimitRejection(result)) {
+			if shouldRetrySyntheticResponse(decision, isSynthetic, result) {
 				recorder.retryIfAnotherForward(recordedAttempt)
 				continue
 			}
@@ -1535,7 +1518,7 @@ func (handler *Handler) executeAttempts(
 			recorder.completeCanceled(ginContext.Request.Context(), 0, recordedAttempt)
 			return
 		}
-		if decision.Retry != health.RetryNone || isSynthetic {
+		if shouldRetrySyntheticAttempt(decision, isSynthetic) {
 			deferred := &deferredAttempt{
 				result: result, decision: decision, upstreamModel: optionalModelValue(selection.UpstreamModelID), attemptIndex: recordedAttempt,
 			}

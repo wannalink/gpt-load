@@ -513,45 +513,8 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 				input.OnFirstResponse()
 			}
 		}
-		var initialChunk []byte
-		if len(bufferedData) > 0 {
-			initialChunk = bufferedData[0]
-		}
 		committed = true
-		if err := commitStream(controller, ready.StatusCode, ready.Header, initialChunk); err != nil {
-			downstreamErr = err
-		} else {
-			if input.OnStreamReady != nil {
-				input.OnStreamReady()
-			}
-			if len(bufferedData) > 1 {
-				for _, chunk := range bufferedData[1:] {
-					written, err := controller.write(chunk)
-					if err != nil {
-						downstreamErr = &streamFailure{
-							kind: streamFailureDownstreamWrite,
-							err:  fmt.Errorf("write execution stream: %w", err),
-						}
-						break
-					}
-					if written != len(chunk) {
-						downstreamErr = &streamFailure{
-							kind: streamFailureDownstreamWrite,
-							err:  fmt.Errorf("write execution stream: %w", io.ErrShortWrite),
-						}
-						break
-					}
-				}
-			}
-			if downstreamErr == nil {
-				if err := controller.flush(); err != nil {
-					downstreamErr = &streamFailure{
-						kind: streamFailureDownstreamWrite,
-						err:  fmt.Errorf("flush execution stream: %w", err),
-					}
-				}
-			}
-		}
+		downstreamErr = replayBufferedStream(controller, ready, bufferedData, input.OnStreamReady)
 	}
 	capturedUsage := streamEvents.finalizeUsage()
 	result := upstreamFromExecutionStreamResult(ctx, input, terminal, streamUsage)

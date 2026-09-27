@@ -8,6 +8,12 @@ import (
 	"gpt-load/internal/storage/models"
 )
 
+func cleanLegacyMigrationLedger(db *gorm.DB) {
+	if db != nil && db.Migrator().HasTable(migrationLedgerTable) {
+		_ = db.Exec("DELETE FROM " + migrationLedgerTable + " WHERE id LIKE '%synthetic%' OR id LIKE '%recalculate%'").Error
+	}
+}
+
 func autoMigrateSyntheticModels(db *gorm.DB) error {
 	if db == nil {
 		return nil

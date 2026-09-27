@@ -123,7 +123,7 @@ func openWithSourceAndPool(
 	if err != nil {
 		return nil, err
 	}
-	return openDatabase(database.Driver, dialector, database.DSN, pool)
+	return openDatabase(database.Driver, dialector, pool)
 }
 
 // openDatabase is the shared GORM/SQL lifecycle for every supported driver.
@@ -132,7 +132,6 @@ func openWithSourceAndPool(
 func openDatabase(
 	driver config.DatabaseDriver,
 	dialector gorm.Dialector,
-	dsn string,
 	pool config.DatabasePoolConfig,
 ) (*gorm.DB, error) {
 	db, err := gorm.Open(dialector, &gorm.Config{
@@ -147,7 +146,7 @@ func openDatabase(
 	if err != nil {
 		return nil, fmt.Errorf("get %s connection pool: %w", databaseDisplayName(driver), err)
 	}
-	configureDatabasePool(sqlDB, driver, dsn, pool)
+	configureDatabasePool(sqlDB, driver, dialector, pool)
 	if err := sqlDB.PingContext(context.Background()); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping %s database: %w", databaseDisplayName(driver), err)
@@ -158,9 +157,13 @@ func openDatabase(
 func configureDatabasePool(
 	sqlDB *sql.DB,
 	driver config.DatabaseDriver,
-	dsn string,
+	dialector gorm.Dialector,
 	pool config.DatabasePoolConfig,
 ) {
+	var dsn string
+	if sq, ok := dialector.(*sqlite.Dialector); ok {
+		dsn = sq.DSN
+	}
 	maxOpenConnections, maxIdleConnections := databasePoolLimits(driver, dsn, pool)
 	sqlDB.SetMaxOpenConns(maxOpenConnections)
 	sqlDB.SetMaxIdleConns(maxIdleConnections)

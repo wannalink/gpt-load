@@ -1,0 +1,5 @@
+services:
+  gpt-load:
+    build:
+      context: .
+      dockerfile: Dockerfile
