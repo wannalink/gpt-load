@@ -21,6 +21,7 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/execution/geminiembedding"
 	"gpt-load/internal/execution/geminiimage"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
@@ -33,6 +34,7 @@ const (
 )
 
 type preparedAttempt struct {
+	cline              bool
 	provider           schemas.ModelProvider
 	mode               channel.RouteMode
 	upstreamProtocol   protocol.Protocol
@@ -46,6 +48,8 @@ type preparedAttempt struct {
 	clientProtocol     protocol.Protocol
 	directKey          schemas.Key
 	secrets            []string
+	// embeddingConversion 记录 OpenAI Embeddings → Gemini 转换回写响应所需的信息。
+	embeddingConversion *geminiembedding.Conversion
 }
 
 type unarySDKResult struct {
@@ -94,6 +98,9 @@ func (r *Runtime) Execute(parent context.Context, spec execution.AttemptSpec) (r
 			result.Error.Hint = execution.FailureHintRequestRejected
 		}
 	}()
+	if prepared.cline {
+		return r.executeCline(parent, spec, prepared)
+	}
 	if prepared.embeddingRequest != nil {
 		return r.executeEmbedding(parent, spec, prepared)
 	}
@@ -203,6 +210,9 @@ func (r *Runtime) ExecuteStream(
 		}
 		result.UpstreamProtocol = prepared.upstreamProtocol
 	}()
+	if prepared.cline {
+		return r.executeClineStream(parent, spec, prepared, sink)
+	}
 	if prepared.passthrough != nil {
 		return r.executeNativeStream(parent, spec, prepared, sink)
 	}
@@ -488,8 +498,9 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 		}
 	}
 	convertedImages := mode == channel.RouteConverted && spec.ClientProtocol == protocol.OpenAIImages && providerKind == channel.ProviderGemini
+	convertedEmbeddings := mode == channel.RouteConverted && spec.ClientProtocol == protocol.OpenAIEmbeddings && providerKind == channel.ProviderGemini
 	nativeGeminiFamily := spec.ClientProtocol == protocol.Gemini || spec.ClientProtocol == protocol.GeminiEmbeddings
-	if convertedImages || mode == channel.RouteNative && nativeGeminiFamily &&
+	if convertedImages || convertedEmbeddings || mode == channel.RouteNative && nativeGeminiFamily &&
 		(providerKind == channel.ProviderGemini || providerKind == channel.ProviderGoogleVertex ||
 			providerKind == channel.ProviderMultiProtocolGateway) {
 		safeQuery = removeRawQueryValue(safeQuery, "alt")
@@ -510,6 +521,9 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 	}
 	if providerKind == channel.ProviderDeepSeek && spec.ClientProtocol == protocol.Anthropic {
 		directKey.UseAnthropicEndpoints = schemas.Ptr(true)
+	}
+	if providerKind == channel.ProviderCline {
+		return r.prepareCline(spec, provider, directKey, secrets, stream, safeQuery)
 	}
 	if spec.ClientProtocol == protocol.Rerank {
 		return prepareRerank(spec, resolved, provider, directKey, secrets)
@@ -620,7 +634,7 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 		}
 		return prepared, nil
 	}
-	if spec.Operation == execution.OperationEmbeddingsCreate && spec.ClientProtocol == protocol.OpenAIEmbeddings {
+	if spec.Operation == execution.OperationEmbeddingsCreate && spec.ClientProtocol == protocol.OpenAIEmbeddings && !convertedEmbeddings {
 		request, conversionErr := buildEmbeddingRequest(spec, provider)
 		if conversionErr != nil {
 			failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid Embeddings request body")
@@ -654,14 +668,14 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 			return preparedAttempt{}, &failure
 		}
 	}
-	if convertedImages || mode == channel.RouteNative && (nativeMessagePassthrough || providerSupportsPassthrough(providerKind)) {
+	if convertedImages || convertedEmbeddings || mode == channel.RouteNative && (nativeMessagePassthrough || providerSupportsPassthrough(providerKind)) {
 		body, sanitizedHeaders, err := sanitizeNativePassthroughRequest(spec, stream)
 		if err == nil && mode == channel.RouteNative && providerKind == channel.ProviderDeepSeek {
 			body, err = normalizeDeepSeekNativeRequest(body, spec.ClientProtocol)
 		}
 		if err != nil {
 			failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid native request body")
-			if spec.ClientProtocol == protocol.OpenAIImages {
+			if spec.ClientProtocol == protocol.OpenAIImages || convertedEmbeddings {
 				failure.Error.OriginHint = execution.ErrorOriginClient
 				failure.Error.ScopeHint = execution.ErrorScopeRequest
 				failure.Error.ReplaySafety = execution.ReplaySafetyUnknown
@@ -669,6 +683,7 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 			return preparedAttempt{}, &failure
 		}
 		passthroughPath := ""
+		var embeddingConversion *geminiembedding.Conversion
 		if convertedImages {
 			body, err = geminiimage.ConvertRequest(body)
 			if err != nil {
@@ -682,6 +697,21 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 				return preparedAttempt{}, &failure
 			}
 			passthroughPath = "/models/" + url.PathEscape(spec.UpstreamModel) + ":generateContent"
+		} else if convertedEmbeddings {
+			var conversion geminiembedding.Conversion
+			body, conversion, err = geminiembedding.ConvertRequest(body, spec.UpstreamModel)
+			if err != nil {
+				var classified interface{ ConversionCode() string }
+				if errors.As(err, &classified) {
+					failure := notSentConversionFailure(classified.ConversionCode(), err.Error())
+					return preparedAttempt{}, &failure
+				}
+				failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "unsupported Gemini Embeddings input")
+				failure.Error.OriginHint, failure.Error.ScopeHint = execution.ErrorOriginClient, execution.ErrorScopeRequest
+				return preparedAttempt{}, &failure
+			}
+			passthroughPath = "/models/" + url.PathEscape(spec.UpstreamModel) + ":batchEmbedContents"
+			embeddingConversion = &conversion
 		} else {
 			passthroughPath, err = nativePassthroughPath(spec, providerKind)
 		}
@@ -741,6 +771,11 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 			upstreamProtocol = protocol.Gemini
 			passthroughHeaders["Accept-Encoding"] = "identity"
 		}
+		if convertedEmbeddings {
+			upstreamProtocol = protocol.GeminiEmbeddings
+			passthroughHeaders["Content-Type"] = "application/json"
+			passthroughHeaders["Accept-Encoding"] = "identity"
+		}
 		return preparedAttempt{
 			provider:         provider,
 			mode:             mode,
@@ -755,8 +790,9 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 				Body:        body,
 				SafeHeaders: passthroughHeaders,
 			},
-			directKey: directKey,
-			secrets:   secrets,
+			directKey:           directKey,
+			secrets:             secrets,
+			embeddingConversion: embeddingConversion,
 		}, nil
 	}
 	if spec.ClientProtocol == protocol.Anthropic && spec.Operation == execution.OperationChatCompletion &&
@@ -938,6 +974,8 @@ func providerSupportsPassthrough(providerKind channel.ProviderKind) bool {
 
 func providerKindNativeForClient(providerKind channel.ProviderKind, clientProtocol protocol.Protocol) bool {
 	switch providerKind {
+	case channel.ProviderCline:
+		return clientProtocol == protocol.OpenAICompletions
 	case channel.ProviderOpenAI, channel.ProviderOpenAICompatible, channel.ProviderMultiProtocolGateway:
 		return clientProtocol == protocol.OpenAICompletions || clientProtocol == protocol.OpenAIResponses ||
 			clientProtocol == protocol.OpenAIImages || clientProtocol == protocol.OpenAIEmbeddings ||
@@ -1032,7 +1070,7 @@ func supportedRequestShape(spec execution.AttemptSpec, stream bool) bool {
 	case protocol.Decisions:
 		return !stream && spec.RouteMode == execution.RouteNative && spec.Operation == execution.OperationDecisionsCreate && spec.Method == http.MethodPost && spec.Path == "/v1/systemone"
 	case protocol.OpenAIEmbeddings:
-		return !stream && spec.RouteMode == execution.RouteNative &&
+		return !stream && (spec.RouteMode == execution.RouteNative || spec.RouteMode == execution.RouteConverted) &&
 			spec.Operation == execution.OperationEmbeddingsCreate &&
 			spec.Method == http.MethodPost && spec.Path == "/v1/embeddings"
 	case protocol.GeminiEmbeddings:
@@ -1236,7 +1274,7 @@ func directKeyForAttempt(
 	switch providerKind {
 	case channel.ProviderOpenAI, channel.ProviderAnthropic, channel.ProviderGemini, channel.ProviderMultiProtocolGateway,
 		channel.ProviderDeepSeek, channel.ProviderOpenRouter, channel.ProviderGroq, channel.ProviderXAI,
-		channel.ProviderOpenAICompatible, channel.ProviderJev:
+		channel.ProviderOpenAICompatible, channel.ProviderJev, channel.ProviderCline:
 		if apiKey == "" {
 			return schemas.Key{}, nil, fmt.Errorf("api_key is required")
 		}

@@ -79,6 +79,7 @@ func BuildContainer() (*dig.Container, error) {
 			limiter.SetRPMStore(store)
 			return limiter
 		},
+		func(handler *gateway.Handler) app.LiveSessionRuntime { return handler },
 		func(limiter *ratelimit.AccessKeyRPM) gateway.AccessKeyRPMLimiter {
 			return limiter
 		},
@@ -250,6 +251,16 @@ func BuildContainer() (*dig.Container, error) {
 			return nil, err
 		}
 	}
+	if err := dependencyContainer.Decorate(func(
+		handler *gateway.Handler,
+		adapter *cpaexecutor.Adapter,
+		cfg *config.Config,
+	) *gateway.Handler {
+		handler.ConfigureCodexLive(adapter, cfg.CodexLive)
+		return handler
+	}); err != nil {
+		return nil, err
+	}
 	if err := dependencyContainer.Invoke(func(
 		engine *gin.Engine,
 		registry *httproute.Registry,
@@ -301,6 +312,7 @@ func newProviderAdapterRegistry(
 		{ProviderKind: channel.ProviderGemini, Adapter: bifrost},
 		{ProviderKind: channel.ProviderMultiProtocolGateway, Adapter: bifrost},
 		{ProviderKind: channel.ProviderOpenAICompatible, Adapter: bifrost},
+		{ProviderKind: channel.ProviderCline, Adapter: bifrost},
 		{ProviderKind: channel.ProviderAzureOpenAI, Adapter: bifrost},
 		{ProviderKind: channel.ProviderAWSBedrock, Adapter: bifrost},
 		{ProviderKind: channel.ProviderGoogleVertex, Adapter: bifrost},

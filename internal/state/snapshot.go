@@ -166,6 +166,7 @@ type GroupView struct {
 	HeaderRules               HeaderRules
 	BlacklistThreshold        int
 	AffinityEnabled           bool
+	CodexLiveMode             CodexLiveMode
 	ResponsesWebsocketEnabled bool
 	EmptyResponseRetry        bool
 	WeightManual              *int
@@ -355,6 +356,7 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 			HeaderRules:               resolved.HeaderRules,
 			BlacklistThreshold:        resolved.BlacklistThreshold,
 			AffinityEnabled:           resolved.AffinityEnabled,
+			CodexLiveMode:             resolved.CodexLiveMode,
 			ResponsesWebsocketEnabled: resolved.ResponsesWebsocketEnabled,
 			EmptyResponseRetry:        resolved.EmptyResponseRetry,
 			WeightManual:              cloneWeight(group.WeightManual),
@@ -448,13 +450,24 @@ func appendExecutionTargets(
 	if !ok {
 		return fmt.Errorf("compile group %d channel: unknown channel %q", group.ID, group.ChannelID)
 	}
-	// 模型配置是分组进入数据面调度的统一门槛；无模型资源请求也不能绕过。
+	// Codex Live 由客户端提供模型，不依赖分组的模型映射。
+	if group.ChannelID == channel.Codex {
+		mode, ok := target.Mode(protocol.CodexLive, execution.OperationLiveCall)
+		if !ok {
+			return fmt.Errorf("compile group %d channel has no Codex live route", group.ID)
+		}
+		appendExecutionTarget(index, protocol.CodexLive, execution.OperationLiveCall, NoModelRouteKey, RouteTarget{
+			GroupID: group.ID, Mode: mode, ResolvedTarget: cloneResolvedTarget(target),
+		})
+	}
+	// 其他操作仍要求分组配置模型；无模型资源请求也不能绕过。
 	if len(group.Models) == 0 {
 		return nil
 	}
 	for _, clientProtocol := range descriptor.ClientProtocols {
 		for _, operation := range target.Operations(clientProtocol) {
-			if operation == execution.OperationListModels || operation == execution.OperationProbe {
+			if operation == execution.OperationListModels || operation == execution.OperationProbe ||
+				operation == execution.OperationLiveCall {
 				continue
 			}
 			mode, ok := target.Mode(clientProtocol, operation)
@@ -485,6 +498,10 @@ func appendExecutionTargets(
 				execution.OperationEmbeddingsCreate, execution.OperationRerank,
 				execution.OperationDecisionsCreate:
 				for _, model := range group.Models {
+					liveModel := group.ChannelID == channel.Codex && model.ID == channel.CodexLiveModelID
+					if liveModel {
+						continue
+					}
 					modelMode, supported := target.ModeForModel(clientProtocol, operation, model.ID)
 					if !supported {
 						return fmt.Errorf("compile group %d channel has no route mode for %q/%q model %q", group.ID, clientProtocol, operation, model.ID)

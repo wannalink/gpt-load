@@ -142,16 +142,10 @@ SSH やリモートブラウザ経由で操作する場合、ブラウザの `lo
 | Gemini                  | `/v1beta/models/...`                                               |
 | Gemini Embeddings       | `POST /v1beta/models/{model}:embedContent` / `:batchEmbedContents` |
 
-各チャネルは実行可能なプロトコルと機能を明示的に宣言します。GPT-Load はサポート対象の機能間で変換を行いますが、任意のプロトコル・任意の JSON を扱う汎用コンバーターではありません。
-
-Embeddings には 2 つの独立したネイティブプロトコルがあります。`openai-embeddings`（`POST /v1/embeddings`）は OpenAI、OpenRouter、OpenAI Compatible、New API、GPT-Load の API Key チャネルで、`gemini-embeddings`（`POST /v1beta/models/{model}:embedContent` と `:batchEmbedContents`）は Gemini、New API、GPT-Load の API Key チャネルで利用できます。リクエストとレスポンスは各プロバイダーのネイティブ形式のままで、サブスクリプションチャネルとプロトコル変換には対応していません。プロトコルフィルターを設定していない AccessKey は既存の「有効なプロトコルをすべて許可する」動作を維持するため、アップグレード後に両方の Embeddings プロトコルへのアクセス権も得ます。最小権限で運用する場合は、プロトコルフィルターを明示的に設定してください。
-
-Rerank は独立した `rerank` プロトコルを使用し、OpenAI Compatible、New API、GPT-Load の API Key チャネルで `POST /v1/rerank` に対応します。リクエストには `model`、`query`、テキストのみの `documents` 配列を指定し、`top_n` や `return_documents` などの上流パラメーターも利用できます。ストリーミング、サブスクリプション、プロトコル変換には対応しません。OpenAI Compatible には完全な API プレフィックス（例：`https://host/v1`）、New API / GPT-Load にはゲートウェイのルートを設定します。上流は互換 Rerank API を提供する必要があります。プロトコルフィルターのない AccessKey は Rerank へのアクセス権も得ます。`search_units` など Token 以外の単位のみが返る場合は未計価とし、Token 数や無料リクエストとして扱いません。
-
 ### 組み込みチャネル
 
 - **公式・クラウド**：OpenAI、Anthropic、Gemini、xAI、Azure OpenAI、AWS Bedrock、Google Vertex AI
-- **モデルサービス**：DeepSeek、Moonshot AI、SiliconFlow、Zhipu AI、Alibaba、Volcengine、OpenRouter、Groq
+- **モデルサービス**：DeepSeek、Moonshot AI、SiliconFlow、Zhipu AI、Alibaba、Volcengine、OpenRouter、Cline、Groq、Cerebras、Mistral、Nebius、Parasail、Wafer、Hugging Face（チャット）、Cohere（テキストリランキング）、OpenCode Go、OpenCode Zen
 - **サブスクリプション**：Codex、Claude、Antigravity、Grok
 - **カスタム**：OpenAI Compatible（任意の互換中継）
 
@@ -236,17 +230,6 @@ Windows の一般ユーザーは代わりに `gpt-load-windows-setup.exe` を利
 環境プロキシは、認証情報、Group、グローバル設定のいずれにもプロキシが指定されていない場合にのみ適用されます。
 
 </details>
-
-## 本番運用の注意事項
-
-- 既定では `127.0.0.1` のみを待ち受けます。リモートアクセスが必要な場合は、管理されたネットワークまたは TLS 対応のリバースプロキシ経由で公開し、ACL とファイアウォールを設定してください。
-- `AUTH_KEY` と `ENCRYPTION_KEY` は厳重に管理し、実際のキーをリポジトリ、ログ、スクリーンショット、公開 Issue に含めないでください。
-- 2.0 は**単一アプリケーションインスタンス**を前提に設計されています。インスタンス間で状態を共有しないため、そのままの水平スケールには対応していません。
-- 使用量とコストはアップストリームの応答に基づく**概算**です。運用分析やリソース評価には使えますが、プロバイダーの請求書や会計上の照合結果とは一致しません。
-- サブスクリプションチャネルはアップストリームの OAuth と互換プロトコルに依存し、アップストリームの変更に伴って調整が必要になる場合があります。利用権限のあるアカウントのみを接続し、各プロバイダーの規約に従ってください。
-- Responses の `previous_response_id` による継続は、ネイティブ Responses と上流での状態管理を宣言した経路に自動で適用されます。現在は `openai`、`gpt_load`、`xai`、`newapi`、`cliproxyapi`、`sub2api` が該当します。帰属を AccessKey ごとに分離し、現在のルーティングで許可される元の認証情報へ固定します。ソフトアフィニティ設定には依存せず、状態が実際に利用できるかは上流に依存します。ステートレス応答と変換された応答は登録せず、Codex サブスクリプションの WebSocket 継続はまだ接続していません。アップグレード前やゲートウェイ外で作成されたものを含め、不明な ID は拒否されます。Group のパラメータ上書きでこのフィールドを変更することはできません。
-- 応答の帰属はメモリに最大 30 日間保持され、上限は 100,000 件および ID テキスト合計 16 MiB です。容量に達すると古い記録を削除します。通常終了時に checkpoint の保存が成功すれば、同じデータディレクトリから復元できます。クラッシュからの復元や、アップストリームの履歴が引き続き有効であることは保証しません。
-- `conversation` とその他の既存リソース ID はこの帰属ルーティングの対象外であり、単一の認証情報またはアップストリームでの認証情報間のリソース共有が引き続き必要です。
 
 ## 1.x からの移行
 

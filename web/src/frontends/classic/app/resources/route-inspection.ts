@@ -29,6 +29,7 @@ export type RouteInspectReasonCode =
   | 'operation_unsupported'
   | 'native_route_required'
   | 'no_route_target'
+  | 'codex_live_disabled'
   | 'group_disabled'
   | 'group_filtered'
   | 'no_available_group'
@@ -51,6 +52,7 @@ export interface RouteInspectRequest {
 
 export type RouteInspectOperation =
   | 'chat_completion'
+  | 'live_call'
   | 'responses_create'
   | 'responses_retrieve'
   | 'responses_delete'
@@ -112,6 +114,7 @@ export interface RouteInspectResponseDto {
 const accessKeyStatuses = ['active', 'disabled'] as const
 export const routeInspectOperations = [
   'chat_completion',
+  'live_call',
   'responses_create',
   'responses_retrieve',
   'responses_delete',
@@ -138,6 +141,7 @@ const reasonCodes = [
   'operation_unsupported',
   'native_route_required',
   'no_route_target',
+  'codex_live_disabled',
   'group_disabled',
   'group_filtered',
   'no_available_group',
