@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"os"
 	"strings"
 
 	"gorm.io/gorm"
@@ -1055,6 +1056,7 @@ func stringValue(value *string) string {
 
 func mapSyntheticModels(rows []models.SyntheticModel) ([]state.SyntheticModelConfig, error) {
 	configs := make([]state.SyntheticModelConfig, 0, len(rows))
+	seen := make(map[string]bool, len(rows))
 	for _, row := range rows {
 		var targetModels []string
 		if len(row.TargetModels) > 0 {
@@ -1069,6 +1071,34 @@ func mapSyntheticModels(rows []models.SyntheticModel) ([]state.SyntheticModelCon
 			TargetModels: targetModels,
 			Enabled:      row.Enabled,
 		})
+		seen[row.Name] = true
+	}
+	if envJSON := strings.TrimSpace(os.Getenv("SYNTHETIC_MODELS")); envJSON != "" {
+		type envSyntheticModel struct {
+			Name         string   `json:"name"`
+			Description  string   `json:"description"`
+			TargetModels []string `json:"target_models"`
+			Enabled      *bool    `json:"enabled"`
+		}
+		var envModels []envSyntheticModel
+		if err := json.Unmarshal([]byte(envJSON), &envModels); err == nil {
+			for _, em := range envModels {
+				if seen[em.Name] || strings.TrimSpace(em.Name) == "" {
+					continue
+				}
+				enabled := true
+				if em.Enabled != nil {
+					enabled = *em.Enabled
+				}
+				configs = append(configs, state.SyntheticModelConfig{
+					Name:         em.Name,
+					Description:  em.Description,
+					TargetModels: em.TargetModels,
+					Enabled:      enabled,
+				})
+				seen[em.Name] = true
+			}
+		}
 	}
 	return configs, nil
 }

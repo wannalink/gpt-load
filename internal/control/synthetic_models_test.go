@@ -1,7 +1,15 @@
 package control
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
+
+	"gpt-load/internal/platform/config"
+	"gpt-load/internal/platform/httproute"
 )
 
 func TestSyntheticModelsCRUD(t *testing.T) {
@@ -117,4 +125,67 @@ func TestSyntheticModelsValidation(t *testing.T) {
 			t.Fatal("expected error on self target")
 		}
 	})
+}
+
+func TestSyntheticModelsHTTP(t *testing.T) {
+	initControlI18n(t)
+	fixture := newServiceFixture(t)
+	server := NewServer(&config.Config{AuthKey: "test-auth-key"}, fixture.service)
+	engine := gin.New()
+	routes, err := httproute.NewRegistry(server.HTTPModule())
+	if err != nil {
+		t.Fatalf("httproute registry: %v", err)
+	}
+	routes.Bind(engine)
+
+	// 1. Create via POST /api/synthetic-models
+	body := strings.NewReader(`{"name":"claude-auto","description":"Auto Claude","target_models":["claude-3-7-sonnet","gemini-2.5-pro"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/synthetic-models", body)
+	req.Header.Set("Authorization", "Bearer test-auth-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// 2. List via GET /api/synthetic-models
+	req = httptest.NewRequest(http.MethodGet, "/api/synthetic-models", nil)
+	req.Header.Set("Authorization", "Bearer test-auth-key")
+	w = httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "claude-auto") {
+		t.Fatalf("list status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// 3. Update via PUT /api/synthetic-models/1
+	updateBody := strings.NewReader(`{"target_models":["gemini-2.5-pro","claude-3-7-sonnet"]}`)
+	req = httptest.NewRequest(http.MethodPut, "/api/synthetic-models/1", updateBody)
+	req.Header.Set("Authorization", "Bearer test-auth-key")
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// Verify snapshot reflected reordering
+	snapshot := fixture.manager.Current()
+	targets := snapshot.SyntheticModels["claude-auto"]
+	if len(targets) != 2 || targets[0] != "gemini-2.5-pro" || targets[1] != "claude-3-7-sonnet" {
+		t.Fatalf("reordered targets = %v, want [gemini-2.5-pro claude-3-7-sonnet]", targets)
+	}
+
+	// 4. Delete via DELETE /api/synthetic-models/1
+	req = httptest.NewRequest(http.MethodDelete, "/api/synthetic-models/1", nil)
+	req.Header.Set("Authorization", "Bearer test-auth-key")
+	w = httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", w.Code, w.Body.String())
+	}
 }

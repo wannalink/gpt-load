@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	app_errors "gpt-load/internal/platform/errors"
+	"gpt-load/internal/platform/httproute"
 	"gpt-load/internal/platform/response"
 	"gpt-load/internal/storage/models"
 )
@@ -287,4 +289,14 @@ func mapSyntheticModelDTO(row models.SyntheticModel) (SyntheticModelDTO, error) 
 		CreatedAtMS:  row.CreatedAtMS,
 		UpdatedAtMS:  row.UpdatedAtMS,
 	}, nil
+}
+
+func (s *Server) syntheticModelRoutes() []httproute.Route {
+	return []httproute.Route{
+		controlRoute("control.synthetic-models.list", http.MethodGet, "/synthetic-models", s.handleListSyntheticModels),
+		controlRoute("control.synthetic-models.get", http.MethodGet, "/synthetic-models/:id", s.handleGetSyntheticModel),
+		controlRoute("control.synthetic-models.create", http.MethodPost, "/synthetic-models", s.handleCreateSyntheticModel),
+		controlRoute("control.synthetic-models.update", http.MethodPut, "/synthetic-models/:id", s.handleUpdateSyntheticModel),
+		controlRoute("control.synthetic-models.delete", http.MethodDelete, "/synthetic-models/:id", s.handleDeleteSyntheticModel),
+	}
 }

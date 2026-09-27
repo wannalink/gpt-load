@@ -31,7 +31,7 @@ var (
 
 // HTTPModule declares the complete authenticated control-plane HTTP surface.
 func (s *Server) HTTPModule() httproute.Module {
-	return httproute.Module{
+	module := httproute.Module{
 		Name:              "control",
 		Owner:             httproute.OwnerControl,
 		Auth:              httproute.AuthControl,
@@ -539,6 +539,8 @@ func (s *Server) HTTPModule() httproute.Module {
 			),
 		},
 	}
+	module.Routes = append(module.Routes, s.syntheticModelRoutes()...)
+	return module
 }
 
 func controlRoute(
