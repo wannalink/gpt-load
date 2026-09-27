@@ -4,7 +4,7 @@
 #
 
 app = 'gpt-load2'
-primary_region = 'ams'
+primary_region = 'arn'
 
 [build]
   dockerfile = "Dockerfile"
