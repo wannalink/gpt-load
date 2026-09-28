@@ -39,7 +39,12 @@ const groups = useQuery({
   queryFn: ({ signal }) => getGroupWorkspace(client, signal),
 })
 const modelOptions = computed(() =>
-  [...new Set((groups.data.value?.items ?? []).flatMap((group) => group.modelNames))]
+  [
+    ...new Set([
+      ...(groups.data.value?.items ?? []).flatMap((group) => group.modelNames),
+      ...(groups.data.value?.syntheticModels ?? []),
+    ]),
+  ]
     .sort()
     .map((value) => ({ value, label: value })),
 )
@@ -199,6 +204,7 @@ function validRules(value: string): boolean {
                   :options="modelOptions"
                   :selected-option="{ value: preset.model, label: preset.model }"
                   :description="t('autoModel.targetHint')"
+                  :allow-custom="true"
                   :disabled="disabled"
                   @update:model-value="
                     update((draft) => (draft.models[index]!.presets[presetIndex]!.model = $event))

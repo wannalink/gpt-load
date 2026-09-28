@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"gorm.io/gorm"
@@ -77,6 +78,18 @@ func (s *Service) autoModelNames() []string {
 			}
 		}
 	}
+	return names
+}
+
+func (s *Service) syntheticModelNames() []string {
+	names := []string{}
+	snapshot := s.manager.Current()
+	if snapshot != nil && snapshot.SyntheticModels != nil {
+		for name := range snapshot.SyntheticModels {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
 	return names
 }
 

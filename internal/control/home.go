@@ -376,6 +376,19 @@ func scopedHomeModelNames(
 			names[name] = struct{}{}
 		}
 	}
+	for syntheticModel, targets := range snapshot.SyntheticModels {
+		if len(accessKey.Filters.Models) > 0 {
+			if _, allowed := accessKey.Filters.Models[syntheticModel]; !allowed {
+				continue
+			}
+		}
+		for _, target := range targets {
+			if _, ok := names[target]; ok {
+				names[syntheticModel] = struct{}{}
+				break
+			}
+		}
+	}
 	result := make([]string, 0, len(names))
 	for name := range names {
 		result = append(result, name)

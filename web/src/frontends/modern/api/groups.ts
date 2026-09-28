@@ -54,6 +54,7 @@ export interface GroupRow {
 }
 export interface GroupWorkspace {
   autoModels?: string[]
+  syntheticModels?: string[]
   observedAt: number
   items: GroupRow[]
 }
@@ -155,6 +156,7 @@ export async function getGroupWorkspace(
   return {
     observedAt: integer(data.observed_at_ms),
     autoModels: data.auto_models === undefined ? [] : list(data.auto_models).map(text),
+    syntheticModels: data.synthetic_models === undefined ? [] : list(data.synthetic_models).map(text),
     items,
   }
 }
