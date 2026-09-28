@@ -36,6 +36,7 @@ func (s *Service) flushRPMCheckpoints(ctx context.Context) {
 	}
 	if err := s.writeRPMCheckpoints(ctx); err != nil {
 		s.warnRPMFailure(err)
+		return
 	}
 	if s.rpmStore.Pending(s.now()) {
 		s.wakeAccessQuotaCheckpoint()
