@@ -15,6 +15,40 @@ primary_region = 'arn'
   PORT = '3001'
   GOMEMLIMIT = '185MiB'
   GOGC = '80'
+  SYNTHETIC_MODELS = '''
+  [
+    {
+      "name": "gemini-flash-auto-best",
+      "description": "Auto-selecting Gemini Flash model with priority fallback",
+      "target_models": ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
+    },
+    {
+      "name": "gemini-flash-auto",
+      "description": "Legacy alias for gemini-flash-auto-best",
+      "target_models": ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
+    },
+    {
+      "name": "gemini-flash-auto-worst",
+      "description": "Gemini Flash models in reverse priority order",
+      "target_models": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-flash-latest"]
+    },
+    {
+      "name": "gemini-flash-auto-frontier",
+      "description": "Gemini Flash frontier tier models",
+      "target_models": ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash"]
+    },
+    {
+      "name": "gemini-flash-auto-mid",
+      "description": "Gemini Flash mid tier models",
+      "target_models": ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
+    },
+    {
+      "name": "gemini-flash-auto-low",
+      "description": "Gemini Flash low tier models",
+      "target_models": ["gemini-3.6-flash", "gemini-flash-lite-latest"]
+    }
+  ]
+  '''
 
 [[mounts]]
   source = 'gpt_storage'
