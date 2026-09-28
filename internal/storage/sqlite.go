@@ -147,7 +147,7 @@ func withSQLiteRuntimeOptions(dsn string, fileBacked bool) (string, error) {
 			name = strings.TrimSpace(name[:index])
 		}
 		switch name {
-		case "foreign_keys", "busy_timeout", "journal_mode":
+		case "foreign_keys", "busy_timeout", "journal_mode", "synchronous":
 			continue
 		default:
 			pragmas = append(pragmas, pragma)
@@ -158,7 +158,7 @@ func withSQLiteRuntimeOptions(dsn string, fileBacked bool) (string, error) {
 		fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS),
 	)
 	if fileBacked {
-		pragmas = append(pragmas, "journal_mode(WAL)")
+		pragmas = append(pragmas, "journal_mode(WAL)", "synchronous(NORMAL)")
 	}
 	query["_pragma"] = pragmas
 	return base + "?" + query.Encode(), nil

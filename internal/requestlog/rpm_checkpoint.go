@@ -54,7 +54,7 @@ func (s *Service) writeRPMCheckpoints(ctx context.Context) error {
 		rows[i] = rpmRow(snapshot)
 	}
 	// 限制占用共享工作线程的时间；存储锁不跨越数据库 I/O。
-	writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	writeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := s.db.WithContext(writeCtx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "kind"}, {Name: "key_id"}, {Name: "minute_ms"}, {Name: "session_id"}},
