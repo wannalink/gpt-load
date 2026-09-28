@@ -275,6 +275,11 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 			}
 		}
 	}
+	for _, synthetic := range input.SyntheticModels {
+		if synthetic.Enabled && synthetic.Name != "" {
+			ordinaryModels[synthetic.Name] = struct{}{}
+		}
+	}
 	if audit.Enabled && (shared.GroupID == 0 || shared.Model == "") {
 		return nil, fmt.Errorf("%w: guardrails require an explicit Jev group and model", requestaudit.ErrInvalidConfig)
 	}

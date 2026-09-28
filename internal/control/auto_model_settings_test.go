@@ -36,13 +36,63 @@ func TestAutoModelSettingsPersistOnlyChannelBackedConfig(t *testing.T) {
 	}
 }
 
-func TestAutoModelSettingsRejectLegacyDirectCredentials(t *testing.T) {
+func TestAutoModelSettingsAcceptSyntheticModelTarget(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)
-	legacy := json.RawMessage(`{"enabled":false,"provider":"openrouter","model":"jev-router","api_key":"secret","timeout_seconds":2,"input_price":"0.042","output_price":"0","models":[]}`)
-	if _, err := fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
-		Settings: map[string]json.RawMessage{"auto_model": legacy},
-	}); err == nil {
-		t.Fatal("legacy direct credential fields were accepted")
+	// 1. Create a synthetic model
+	_, err := fixture.service.CreateSyntheticModel(t.Context(), SyntheticModelCreateRequest{
+		Name:         "gemini-flash-auto-best",
+		TargetModels: []string{"gemini-flash-latest", "gemini-3.8-flash"},
+	})
+	if err != nil {
+		t.Fatalf("create synthetic model: %v", err)
+	}
+
+	// 2. Create a JEV channel group for the decision model
+	_, err = fixture.service.CreateGroup(t.Context(), GroupCreateRequest{
+		Name:           stringPointer("Jev Router"),
+		ChannelID:      "jev",
+		ConnectionType: models.ConnectionTypeAPIKey,
+		Params:         json.RawMessage(`{"base_url":"https://api.typesafe.ai/v1"}`),
+		Credentials:    "test-key",
+		Models: optionalGroupModels{
+			Set: true,
+			Values: []GroupModel{
+				{ID: "von-latest", Alias: "von-latest", AliasEnabled: true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	// 3. Save auto_model settings targeting the synthetic model
+	autoModelJSON := `{
+		"enabled": true,
+		"model": "von-latest",
+		"timeout_seconds": 2,
+		"models": [
+			{
+				"id": "entry-1",
+				"name": "auto-smart",
+				"fallback": "preset-1",
+				"presets": [
+					{
+						"id": "preset-1",
+						"name": "Low",
+						"model": "gemini-flash-auto-best",
+						"description": "Routine tasks",
+						"parameter_overrides": []
+					}
+				]
+			}
+		]
+	}`
+
+	_, err = fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
+		Settings: map[string]json.RawMessage{"auto_model": json.RawMessage(autoModelJSON)},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings with synthetic model target failed: %v", err)
 	}
 }
