@@ -13,8 +13,8 @@ primary_region = 'arn'
   DATA_DIR = '/app/data'
   HOST = '0.0.0.0'
   PORT = '3001'
-  GOMEMLIMIT = '185MiB'
-  GOGC = '80'
+  GOMEMLIMIT = '120MiB'
+  GOGC = '40'
   SYNTHETIC_MODELS = '''
   [
     {
@@ -66,3 +66,4 @@ primary_region = 'arn'
   memory = '256mb'
   cpus = 1
   memory_mb = 256
+  swap_size_mb = 512

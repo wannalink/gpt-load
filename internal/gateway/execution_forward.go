@@ -515,6 +515,7 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		}
 		committed = true
 		downstreamErr = replayBufferedStream(controller, ready, bufferedData, input.OnStreamReady)
+		bufferedData = nil
 	}
 	capturedUsage := streamEvents.finalizeUsage()
 	result := upstreamFromExecutionStreamResult(ctx, input, terminal, streamUsage)
