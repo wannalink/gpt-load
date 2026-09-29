@@ -997,6 +997,7 @@ func newExecutionAttemptSpec(input ForwardInput) (execution.AttemptSpec, error) 
 		RawQuery:                 input.Request.RawQuery,
 		Header:                   headers,
 		ConfiguredHeaders:        input.Group.HeaderRules.ConfiguredNames(),
+		ConfiguredParameters:     input.ConfiguredParameters,
 		Body:                     input.Request.Body,
 		IncludeUsage:             input.ObserveUsage,
 		Synthetic:                input.Synthetic,
