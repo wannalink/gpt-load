@@ -68,6 +68,23 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 			wantMatch: false,
 		},
 		{
+			name: "gemini input token count quota error returns client error and retry none",
+			attempt: ExecutionAttempt{
+				StatusCode: http.StatusTooManyRequests,
+				Now:        now,
+				Evidence: &execution.ErrorEvidence{
+					Kind:       execution.ErrorKindHTTP,
+					StatusCode: http.StatusTooManyRequests,
+					Summary:    "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 250000, model: gemini-3.8-flash",
+				},
+			},
+			wantMatch:  true,
+			wantScope:  execution.ErrorScopeRequest,
+			wantEffect: EffectNone,
+			wantRetry:  RetryNone,
+			wantRuleID: RuleID("gemini.input_token_limit_exceeded"),
+		},
+		{
 			name: "nil evidence does not match",
 			attempt: ExecutionAttempt{
 				StatusCode: http.StatusTooManyRequests,
@@ -86,8 +103,12 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 			if !matched {
 				return
 			}
-			if decision.Category != FailureCategoryRateLimited {
-				t.Errorf("Category = %v, want %v", decision.Category, FailureCategoryRateLimited)
+			expectedCategory := FailureCategoryRateLimited
+			if tc.wantRuleID == "gemini.input_token_limit_exceeded" {
+				expectedCategory = FailureCategoryClientError
+			}
+			if decision.Category != expectedCategory {
+				t.Errorf("Category = %v, want %v", decision.Category, expectedCategory)
 			}
 			if decision.Scope != tc.wantScope {
 				t.Errorf("Scope = %v, want %v", decision.Scope, tc.wantScope)
@@ -100,6 +121,13 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 			}
 			if decision.RuleID != tc.wantRuleID {
 				t.Errorf("RuleID = %v, want %v", decision.RuleID, tc.wantRuleID)
+			}
+
+			if tc.wantRuleID == "gemini.input_token_limit_exceeded" {
+				if !decision.CooldownUntil.IsZero() {
+					t.Errorf("CooldownUntil = %v, want zero time", decision.CooldownUntil)
+				}
+				return
 			}
 
 			// Calculate expected cooldown using America/Los_Angeles (Pacific Time)

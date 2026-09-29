@@ -104,6 +104,19 @@ func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 		attempt.Evidence.Summary,
 	}, " "))
 
+	if strings.Contains(markers, "input_token_count") ||
+		strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
+		strings.Contains(markers, "token count exceeds") {
+		return decision(
+			FailureCategoryClientError,
+			originForEvidence(attempt.Evidence),
+			execution.ErrorScopeRequest,
+			RetryNone,
+			EffectNone,
+			RuleID("gemini.input_token_limit_exceeded"),
+		), true
+	}
+
 	if !strings.Contains(markers, GeminiFreeTierQuotaMetric) &&
 		!strings.Contains(markers, strings.ToLower(GeminiFreeTierQuotaErrorSubstring)) {
 		return Decision{}, false
