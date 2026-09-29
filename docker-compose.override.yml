@@ -2,4 +2,4 @@ services:
   gpt-load:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.fly

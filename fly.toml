@@ -7,7 +7,7 @@ app = 'gpt-load2'
 primary_region = 'arn'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "Dockerfile.fly"
 
 [env]
   DATA_DIR = '/app/data'
@@ -20,11 +20,6 @@ primary_region = 'arn'
     {
       "name": "gemini-flash-auto-best",
       "description": "Auto-selecting Gemini Flash model with priority fallback",
-      "target_models": ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
-    },
-    {
-      "name": "gemini-flash-auto",
-      "description": "Legacy alias for gemini-flash-auto-best",
       "target_models": ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
     },
     {

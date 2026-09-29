@@ -29,5 +29,9 @@ func autoMigrateSyntheticModels(db *gorm.DB) error {
 		_ = db.Where(&models.SystemSetting{Key: "fork_upstream_usage_recalc_v1"}).Delete(&models.SystemSetting{}).Error
 	}
 
+	if db.Migrator().HasTable("request_log_attempts") {
+		_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_request_log_attempts_group_request ON request_log_attempts(group_id, request_id)").Error
+	}
+
 	return nil
 }
