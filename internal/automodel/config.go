@@ -259,8 +259,8 @@ func Template() Entry {
 		{"max", "gpt-6-astra", "The highest capability level for open-ended or high-risk work with many coupled constraints, multi-system architecture or migration decisions, difficult multi-hop diagnosis, or subtle interactions requiring broad investigation and careful validation."},
 	} {
 		rules, _ := json.Marshal([]any{
-			map[string]any{"match": map[string]string{"protocol": "openai-completions"}, "set": map[string]string{"reasoning_effort": value.id}},
-			map[string]any{"match": map[string]string{"protocol": "openai-responses"}, "set": map[string]any{"reasoning": map[string]string{"effort": value.id}}},
+			map[string]any{"match": map[string]string{"protocol": "openai-completions"}, "set": map[string]string{"reasoning_effort": "high"}},
+			map[string]any{"match": map[string]string{"protocol": "openai-responses"}, "set": map[string]any{"reasoning": map[string]string{"effort": "high"}}},
 		})
 		entry.Presets = append(entry.Presets, Preset{ID: value.id, Name: value.id, Model: value.model, Description: value.description, ParameterOverrides: rules})
 	}
