@@ -947,3 +947,52 @@ func TestAutoModelPrewarmReuseDoesNotFreezeNextUserTask(t *testing.T) {
 		})
 	}
 }
+
+func TestAutoModelRoutesToSyntheticModelPreservesSyntheticFlag(t *testing.T) {
+	forwarder := &scriptedForwarder{results: []UpstreamResult{
+		{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)},
+	}}
+	handler, manager, _ := newHandlerForTest(t, forwarder, "key-a", "key-b")
+	handler.dialects = dialect.NewSet(dialect.NewOpenAI())
+	configureAutoModelTest(t, handler, manager, state.FilterSet{})
+
+	// Add synthetic model "synthetic-smart" targeting "gpt-4o"
+	manager.Current().SyntheticModels = map[string][]string{
+		"synthetic-smart": {"gpt-4o"},
+	}
+
+	// Update auto_model preset to target "synthetic-smart"
+	config := manager.Current().AutoModels.Config()
+	config.Models[0].Presets[0].Model = "synthetic-smart"
+	compiled, err := automodel.Compile(config, map[string]struct{}{"gpt-4o": {}, "gpt-4.1": {}, "synthetic-smart": {}}, map[string]struct{}{"jev-router": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Current().AutoModels = compiled
+
+	handler.decisionClient = autoDecisionClient(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{"answers":{"preset":{"choice":"balanced","confidence":0.9}}}`)),
+		}, nil
+	})
+
+	engine := gin.New()
+	bindGatewayRoutesForTest(t, engine, handler)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto-probe","messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("Authorization", "Bearer gl-client")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+
+	if response.Code != 200 {
+		t.Fatalf("response code = %d, body = %s", response.Code, response.Body)
+	}
+	if len(forwarder.inputs) != 1 {
+		t.Fatalf("inputs count = %d, want 1", len(forwarder.inputs))
+	}
+	if !forwarder.inputs[0].Synthetic {
+		t.Fatalf("forwarder input Synthetic = %v, want true", forwarder.inputs[0].Synthetic)
+	}
+}

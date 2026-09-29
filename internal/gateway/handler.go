@@ -667,6 +667,9 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 			recorder.completeCanceled(ctx, 0, -1)
 			return
 		}
+		if metadata.Model != nil && *metadata.Model != "" {
+			model = *metadata.Model
+		}
 	}
 	query := scheduler.Query{
 		ClientProtocol:           selectedRoute.Protocol,
@@ -905,7 +908,11 @@ func (handler *Handler) executeAttempts(
 ) {
 	stream := originalMetadata.Stream
 	operation := originalMetadata.Operation
-	isSynthetic := isSyntheticModelRequest(iterator.Snapshot(), externalModel)
+	syntheticModelName := externalModel
+	if originalMetadata.Model != nil && *originalMetadata.Model != "" {
+		syntheticModelName = *originalMetadata.Model
+	}
+	isSynthetic := isSyntheticModelRequest(iterator.Snapshot(), syntheticModelName)
 	var redactionCipher encryption.RedactionCipher
 	if !snapshot.RequestRedaction.Empty() || redactionBusinessProtocol(selectedDialect.Protocol()) {
 		var err error
