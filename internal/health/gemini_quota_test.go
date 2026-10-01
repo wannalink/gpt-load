@@ -85,6 +85,19 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 			wantRuleID: RuleID("gemini.input_token_limit_exceeded"),
 		},
 		{
+			name: "gemini input token per minute error is retryable and does not trigger immediate client error termination",
+			attempt: ExecutionAttempt{
+				StatusCode: http.StatusTooManyRequests,
+				Now:        now,
+				Evidence: &execution.ErrorEvidence{
+					Kind:       execution.ErrorKindHTTP,
+					StatusCode: http.StatusTooManyRequests,
+					Summary:    "Rate limit exceeded for input token count per minute",
+				},
+			},
+			wantMatch: false,
+		},
+		{
 			name: "nil evidence does not match",
 			attempt: ExecutionAttempt{
 				StatusCode: http.StatusTooManyRequests,

@@ -104,9 +104,10 @@ func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 		attempt.Evidence.Summary,
 	}, " "))
 
-	if strings.Contains(markers, "input_token_count") ||
+	if (strings.Contains(markers, "input_token_count") ||
 		strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
-		strings.Contains(markers, "token count exceeds") {
+		strings.Contains(markers, "token count exceeds")) &&
+		!strings.Contains(markers, "per minute") && !strings.Contains(markers, "tpm") {
 		return decision(
 			FailureCategoryClientError,
 			originForEvidence(attempt.Evidence),
