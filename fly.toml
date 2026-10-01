@@ -35,12 +35,12 @@ primary_region = 'arn'
     {
       "name": "gemini-flash-auto-mid",
       "description": "Gemini Flash mid tier models",
-      "target_models": ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash"]
+      "target_models": ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"]
     },
     {
       "name": "gemini-flash-auto-low",
       "description": "Gemini Flash low tier models",
-      "target_models": ["gemini-3.6-flash", "gemini-flash-lite-latest"]
+      "target_models": ["gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-3.5-flash", "gemini-3.7-flash", "gemini-flash-latest", "gemini-3.8-flash"]
     }
   ]
   '''
