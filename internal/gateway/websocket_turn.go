@@ -940,6 +940,7 @@ func (s *websocketConnection) runWebsocketAttempt(ctx context.Context, cancel co
 	}
 	var restoreFailure error
 	var eventProtocolFailure bool
+	outputTiming := dialect.OutputTimingObserver{Protocol: protocol.OpenAIResponses}
 	emitRestored := func(ctx context.Context, frames [][]byte) error {
 		if len(frames) == 0 {
 			return nil
@@ -955,6 +956,12 @@ func (s *websocketConnection) runWebsocketAttempt(ctx context.Context, cancel co
 			}
 			if err := s.emit(ctx, frame); err != nil {
 				return err
+			}
+			produced := outputTiming.Observe(dialect.StreamEvent{Payload: frame})
+			if outputTiming.Overflowed() {
+				recorder.recordOutput(false)
+			} else if produced {
+				recorder.recordOutput(true)
 			}
 			result.Committed = true
 			result.ResponseStarted = true
@@ -1113,7 +1120,6 @@ func (s *websocketConnection) runWebsocketAttempt(ctx context.Context, cancel co
 		return emitRestored(ctx, frames)
 	})
 	if wsResult.AppliedReasoning != nil {
-		recorder.setReasoning(*wsResult.AppliedReasoning)
 		result.AppliedReasoning = wsResult.AppliedReasoning.Clone()
 	}
 	if restored != nil && wsResult.Error == nil && restoreFailure == nil {

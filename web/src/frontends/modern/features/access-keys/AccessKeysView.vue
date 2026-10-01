@@ -446,7 +446,6 @@ onScopeDispose(() => {
     <AppListFrame
       ref="frame"
       :label="t('accessKeys.title')"
-      :scroll-key="route.fullPath"
       :loading="query.isFetching.value && Boolean(query.data.value)"
     >
       <template #header
@@ -486,15 +485,6 @@ onScopeDispose(() => {
           <AppButton variant="text" @click="setPanel('detail', row.id)"
             ><AppOverflowText :text="row.name"
           /></AppButton>
-          <div class="modern-access-concurrency">
-            {{
-              t('concurrency.value', {
-                current: row.concurrency.current,
-                limit:
-                  row.concurrency.limit === 0 ? t('concurrency.unlimited') : row.concurrency.limit,
-              })
-            }}
-          </div>
         </div>
         <div class="modern-access-key">
           <AppCopyValue
@@ -678,11 +668,6 @@ onScopeDispose(() => {
 }
 .modern-access-row > div {
   min-width: 0;
-}
-.modern-access-concurrency {
-  color: var(--modern-muted);
-  font-size: var(--modern-font-size-small);
-  white-space: nowrap;
 }
 .modern-access-name :deep(.modern-button) {
   max-width: 100%;
