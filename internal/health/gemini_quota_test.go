@@ -32,10 +32,10 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 				},
 			},
 			wantMatch:  true,
-			wantScope:  execution.ErrorScopeModel,
-			wantEffect: EffectCooldownModel,
-			wantRetry:  RetryNextCandidate,
-			wantRuleID: RuleID("gemini.free_tier_quota_model_cooldown"),
+			wantScope:  execution.ErrorScopeRequest,
+			wantEffect: EffectNone,
+			wantRetry:  RetryNone,
+			wantRuleID: RuleID("gemini.free_tier_quota_exhausted"),
 		},
 		{
 			name: "case insensitive metric match in code or summary",
@@ -49,10 +49,10 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 				},
 			},
 			wantMatch:  true,
-			wantScope:  execution.ErrorScopeModel,
-			wantEffect: EffectCooldownModel,
-			wantRetry:  RetryNextCandidate,
-			wantRuleID: RuleID("gemini.free_tier_quota_model_cooldown"),
+			wantScope:  execution.ErrorScopeRequest,
+			wantEffect: EffectNone,
+			wantRetry:  RetryNone,
+			wantRuleID: RuleID("gemini.free_tier_quota_exhausted"),
 		},
 		{
 			name: "other rate limit error does not trigger gemini free tier cooldown",
@@ -136,22 +136,8 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 				t.Errorf("RuleID = %v, want %v", decision.RuleID, tc.wantRuleID)
 			}
 
-			if tc.wantRuleID == "gemini.input_token_limit_exceeded" {
-				if !decision.CooldownUntil.IsZero() {
-					t.Errorf("CooldownUntil = %v, want zero time", decision.CooldownUntil)
-				}
-				return
-			}
-
-			// Calculate expected cooldown using America/Los_Angeles (Pacific Time)
-			loc, err := time.LoadLocation("America/Los_Angeles")
-			if err != nil {
-				loc = time.FixedZone("Pacific Time", -8*60*60)
-			}
-			nowPT := tc.attempt.Now.In(loc)
-			expectedCooldown := time.Date(nowPT.Year(), nowPT.Month(), nowPT.Day()+1, 0, 0, 0, 0, loc)
-			if !decision.CooldownUntil.Equal(expectedCooldown) {
-				t.Errorf("CooldownUntil = %v, want %v", decision.CooldownUntil, expectedCooldown)
+			if !decision.CooldownUntil.IsZero() {
+				t.Errorf("CooldownUntil = %v, want zero time", decision.CooldownUntil)
 			}
 		})
 	}
@@ -180,24 +166,17 @@ func TestJudgeExecutionGeminiFreeTierQuota(t *testing.T) {
 	if decision.Category != FailureCategoryRateLimited {
 		t.Errorf("Category = %v, want %v", decision.Category, FailureCategoryRateLimited)
 	}
-	if decision.Effect != EffectCooldownModel {
-		t.Errorf("Effect = %v, want %v (built-in model cooldown)", decision.Effect, EffectCooldownModel)
+	if decision.Effect != EffectNone {
+		t.Errorf("Effect = %v, want %v", decision.Effect, EffectNone)
 	}
-	if decision.Scope != execution.ErrorScopeModel {
-		t.Errorf("Scope = %v, want %v", decision.Scope, execution.ErrorScopeModel)
+	if decision.Scope != execution.ErrorScopeRequest {
+		t.Errorf("Scope = %v, want %v", decision.Scope, execution.ErrorScopeRequest)
 	}
-	if decision.Retry != RetryNextCandidate {
-		t.Errorf("Retry = %v, want %v", decision.Retry, RetryNextCandidate)
+	if decision.Retry != RetryNone {
+		t.Errorf("Retry = %v, want %v", decision.Retry, RetryNone)
 	}
-
-	loc, err := time.LoadLocation("America/Los_Angeles")
-	if err != nil {
-		loc = time.FixedZone("Pacific Time", -8*60*60)
-	}
-	nowPT := now.In(loc)
-	expectedCooldown := time.Date(nowPT.Year(), nowPT.Month(), nowPT.Day()+1, 0, 0, 0, 0, loc)
-	if !decision.CooldownUntil.Equal(expectedCooldown) {
-		t.Errorf("CooldownUntil = %v, want %v (midnight PT)", decision.CooldownUntil, expectedCooldown)
+	if !decision.CooldownUntil.IsZero() {
+		t.Errorf("CooldownUntil = %v, want zero time", decision.CooldownUntil)
 	}
 }
 

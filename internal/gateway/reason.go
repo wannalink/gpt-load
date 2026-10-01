@@ -22,7 +22,10 @@ type reason struct {
 }
 
 func providerErrorReason(result UpstreamResult) reason {
-	if result.ExecutionError != nil && result.ExecutionError.Hint == execution.FailureHintRateLimited {
+	if result.ExecutionError != nil && (result.ExecutionError.Hint == execution.FailureHintRateLimited || result.ExecutionError.StatusCode == http.StatusTooManyRequests) {
+		return reasonUpstreamRateLimited
+	}
+	if result.StatusCode == http.StatusTooManyRequests {
 		return reasonUpstreamRateLimited
 	}
 	return reasonUpstreamProtocol

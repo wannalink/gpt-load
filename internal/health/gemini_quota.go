@@ -123,25 +123,14 @@ func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 		return Decision{}, false
 	}
 
-	retry := retryUnlessExplicitlyUnknown(attempt.Evidence)
-	if retry == RetryNone {
-		retry = RetryNextCandidate
-	}
-
-	res := decision(
+	return decision(
 		FailureCategoryRateLimited,
 		originForEvidence(attempt.Evidence),
-		execution.ErrorScopeModel,
-		retry,
-		EffectCooldownModel,
-		RuleID("gemini.free_tier_quota_model_cooldown"),
-	)
-
-	nowPT := attempt.Now.In(pacificLoc)
-	nextMidnightPT := time.Date(nowPT.Year(), nowPT.Month(), nowPT.Day()+1, 0, 0, 0, 0, pacificLoc)
-	res.CooldownUntil = nextMidnightPT
-
-	return res, true
+		execution.ErrorScopeRequest,
+		RetryNone,
+		EffectNone,
+		RuleID("gemini.free_tier_quota_exhausted"),
+	), true
 }
 
 // geminiHighDemandDecision inspects the execution attempt for Gemini's high demand 503 error

@@ -366,3 +366,90 @@ func TestSyntheticProxyTotalExhaustionReturns503(t *testing.T) {
 		t.Fatalf("error.code = %q, want no_available_candidate", errBody.Code)
 	}
 }
+
+func TestSyntheticProxyFreeTierDailyQuotaFailsFastWithoutRetryOrCooldown(t *testing.T) {
+	// Attempt 1 receives Google daily free-tier quota exhaustion error:
+	// It should terminate immediately without retrying other credentials or synthetic fallback tiers,
+	// and should NOT put cooldown on the credential.
+	forwarder := &scriptedForwarder{results: []UpstreamResult{
+		withProviderErrorBeforeCommit(UpstreamResult{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"error":{"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15","code":429}}`),
+			ExecutionError: &execution.ErrorEvidence{
+				Kind:       execution.ErrorKindHTTP,
+				StatusCode: http.StatusTooManyRequests,
+				Summary:    "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15",
+			},
+		}),
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"id":"should-not-reach"}`),
+		},
+	}}
+
+	handler, manager, registry := newHandlerForTest(t, forwarder)
+	if _, err := manager.Publish(state.CompileInput{
+		ChannelRegistry: channel.NewRegistry(),
+		Groups: []state.GroupConfig{
+			{
+				ConnectionType: "api_key", ID: 1, Name: "gemini-group", ChannelID: channel.OpenAI,
+				Params: json.RawMessage(`{}`),
+				Models: []state.ModelConfig{{ID: "gemini-flash-latest"}}, Enabled: true,
+			},
+			{
+				ConnectionType: "api_key", ID: 2, Name: "gemini-fallback-group", ChannelID: channel.OpenAI,
+				Params: json.RawMessage(`{}`),
+				Models: []state.ModelConfig{{ID: "gemini-3.8-flash"}}, Enabled: true,
+			},
+		},
+		Credentials: []state.CredentialConfig{
+			{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1"},
+			{ID: 2, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 2, Fingerprint: "cred-2"},
+			{ID: 3, GroupID: 2, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 3, Fingerprint: "cred-3"},
+		},
+		SyntheticModels: []state.SyntheticModelConfig{
+			{
+				ID:           1,
+				Name:         "gemini-auto",
+				TargetModels: []string{"gemini-flash-latest", "gemini-3.8-flash"},
+				Enabled:      true,
+			},
+		},
+		AccessKeys: []state.AccessKeyConfig{{
+			ID: 1, Name: "client", KeyHash: handler.encryption.Hash("gl-client"),
+			Status: state.AccessKeyStatusActive,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	enc1, _ := handler.encryption.Encrypt(`{"api_key":"sk-gemini-1"}`)
+	enc2, _ := handler.encryption.Encrypt(`{"api_key":"sk-gemini-2"}`)
+	enc3, _ := handler.encryption.Encrypt(`{"api_key":"sk-gemini-3"}`)
+	_ = registry.ReplaceCredentials([]state.CredentialEntry{
+		{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1", EncryptedValue: enc1},
+		{ID: 2, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 2, Fingerprint: "cred-2", EncryptedValue: enc2},
+		{ID: 3, GroupID: 2, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 3, Fingerprint: "cred-3", EncryptedValue: enc3},
+	})
+
+	engine := gin.New()
+	bindGatewayRoutesForTest(t, engine, handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"gemini-auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer gl-client")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	// Must terminate immediately with 429
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429, body = %s", recorder.Code, recorder.Body.String())
+	}
+	// Must have made ONLY 1 attempt (did not rotate key 2 or tier 2)
+	if len(forwarder.inputs) != 1 {
+		t.Fatalf("attempts count = %d, want 1 (should fail fast without retrying other keys)", len(forwarder.inputs))
+	}
+}

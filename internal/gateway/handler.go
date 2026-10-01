@@ -1568,7 +1568,7 @@ func (handler *Handler) executeAttempts(
 			recorder.completeCanceled(ginContext.Request.Context(), 0, recordedAttempt)
 			return
 		}
-		if shouldRetrySyntheticAttempt(decision, isSynthetic) {
+		if shouldRetrySyntheticAttempt(decision, isSynthetic, result) {
 			deferred := &deferredAttempt{
 				result: result, decision: decision, upstreamModel: optionalModelValue(selection.UpstreamModelID), attemptIndex: recordedAttempt,
 			}
