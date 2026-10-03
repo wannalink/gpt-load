@@ -89,10 +89,31 @@ func getNextGeminiBackoff(groupID uint, model string, now time.Time) time.Durati
 	return state.currentDelay
 }
 
+// parseGeminiRetryDuration parses duration from Gemini's rate limit error message
+// (e.g. "Please retry in 3h7m1.473191079s.").
+func parseGeminiRetryDuration(text string) (time.Duration, bool) {
+	lower := strings.ToLower(text)
+	idx := strings.Index(lower, "please retry in ")
+	if idx == -1 {
+		return 0, false
+	}
+	remaining := strings.TrimSpace(text[idx+len("please retry in "):])
+	fields := strings.Fields(remaining)
+	if len(fields) == 0 {
+		return 0, false
+	}
+	rawDuration := strings.TrimRight(fields[0], ".,;:!?")
+	d, err := time.ParseDuration(rawDuration)
+	if err != nil || d <= 0 {
+		return 0, false
+	}
+	return d, true
+}
+
 // geminiFreeTierQuotaDecision inspects the execution attempt for Gemini's free tier quota error
 // ("Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit:")
 // and returns a Decision forcing a model-specific cooldown (EffectCooldownModel) for the specific key-model pair
-// until the next 12:00 AM midnight Pacific Time.
+// until the next 12:00 AM midnight Pacific Time or the duration parsed from the error message.
 func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 	if attempt.Evidence == nil {
 		return Decision{}, false
@@ -123,14 +144,31 @@ func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 		return Decision{}, false
 	}
 
-	return decision(
+	retry := retryUnlessExplicitlyUnknown(attempt.Evidence)
+	if retry == RetryNone {
+		retry = RetryNextCandidate
+	}
+
+	res := decision(
 		FailureCategoryRateLimited,
 		originForEvidence(attempt.Evidence),
-		execution.ErrorScopeRequest,
-		RetryNone,
-		EffectNone,
-		RuleID("gemini.free_tier_quota_exhausted"),
-	), true
+		execution.ErrorScopeModel,
+		retry,
+		EffectCooldownModel,
+		RuleID("gemini.free_tier_quota_model_cooldown"),
+	)
+
+	if d, ok := parseGeminiRetryDuration(attempt.Evidence.Summary); ok {
+		res.CooldownUntil = attempt.Now.Add(d)
+	} else if d, ok := parseGeminiRetryDuration(markers); ok {
+		res.CooldownUntil = attempt.Now.Add(d)
+	} else {
+		nowPT := attempt.Now.In(pacificLoc)
+		nextMidnightPT := time.Date(nowPT.Year(), nowPT.Month(), nowPT.Day()+1, 0, 0, 0, 0, pacificLoc)
+		res.CooldownUntil = nextMidnightPT
+	}
+
+	return res, true
 }
 
 // geminiHighDemandDecision inspects the execution attempt for Gemini's high demand 503 error
