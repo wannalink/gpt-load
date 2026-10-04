@@ -594,6 +594,9 @@ export default {
       },
     },
     logs: {
+      ipColumn: 'IP column',
+      copyIP: 'Copy IP',
+      filterIP: 'Show only logs for IP {value}',
       loading: 'Loading request logs…',
       loadFailed: 'Unable to load request logs.',
       loadMore: 'Load more',
@@ -614,6 +617,7 @@ export default {
         partialFailed: 'Some filter options are unavailable. Log queries remain available.',
       },
       filters: {
+        clientIP: 'IP',
         label: 'Request log filters',
         timeRange: 'Time range',
         from: 'From',
@@ -693,6 +697,7 @@ export default {
         appliedCostState: 'Cost {value}',
         appliedCompleteness: 'Pricing {value}',
         appliedRequestId: 'Request ID {value}',
+        appliedClientIP: 'IP {value}',
         timezone: 'Local timezone',
         lastRefreshed: 'Last successful refresh',
         remove: 'Remove filter {value}',
@@ -891,13 +896,7 @@ export default {
         statusCode: 'Status code',
         duration: 'Duration',
         firstResponse: 'First response',
-        outputRate: 'Output rate',
-        firstOutputHint:
-          'Time from receiving the request to delivering the first text, reasoning content, or tool arguments, including queueing and retries.',
-        nonStreamOutputRateHint:
-          'Non-streaming average speed = output tokens / total request duration, including waiting, retries, and reasoning time.',
-        outputRateHint:
-          'Estimated speed = (output tokens − 1) / time between first and last effective output. Output includes reasoning tokens; hidden reasoning may affect the estimate.',
+        outputRate: 'Average output speed',
         attemptCount: 'Attempts',
         request: 'Client request',
         finalExecution: 'Upstream execution',
@@ -982,6 +981,7 @@ export default {
         },
       },
       columns: {
+        clientIP: 'IP',
         time: 'Time',
         modelProtocol: 'Model / protocol',
         response: 'Response',

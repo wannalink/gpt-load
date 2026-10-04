@@ -149,13 +149,16 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		return executionInputFailure(err)
 	}
 
+	ctx, stopFirstResponse := execution.WithFirstResponseObserver(ctx, input.OnFirstResponse)
+	defer stopFirstResponse()
+	firstData := execution.NewFirstResponseSSEFallback(ctx)
 	writeTimeout := forwarder.writeTimeout
 	if writeTimeout <= 0 {
 		writeTimeout = downstreamWriteTimeout
 	}
 	controller := newStreamWriteController(downstream, writeTimeout)
 	defer func() { _ = controller.clear() }()
-	outputDelivered := outputTimingSink(input.ClientProtocol, input.OnOutput)
+	outputDelivered := firstOutputSink(input.ClientProtocol, input.OnFirstOutput)
 	usageCapture := forwarder.usageCapture
 	if usageCapture == nil {
 		usageCapture = newUsageCaptureBoundary()
@@ -231,7 +234,6 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 	var (
 		ready         *execution.StreamEvent
 		committed     bool
-		firstResponse bool
 		downstreamErr error
 		errorBody     []byte
 		streamUsage   *execution.UsageEvidence
@@ -303,16 +305,11 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 				downstreamErr = fmt.Errorf("%w: execution data arrived before response metadata", ErrUpstreamProtocol)
 				return downstreamErr
 			}
-			if !firstResponse {
-				firstResponse = true
-				if input.OnFirstResponse != nil {
-					input.OnFirstResponse()
-				}
-			}
 			if ready.StatusCode < http.StatusOK || ready.StatusCode >= http.StatusMultipleChoices {
 				errorBody = appendExecutionErrorBody(errorBody, event.Data)
 				return nil
 			}
+			firstData(event.Data)
 			observedData := event.Data
 			if responsesStoreBuffer != nil {
 				observedData, err = responsesStoreBuffer.push(event.Data)
@@ -359,12 +356,6 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 				return nil
 			}
 			if !committed {
-				if !firstResponse {
-					firstResponse = true
-					if input.OnFirstResponse != nil {
-						input.OnFirstResponse()
-					}
-				}
 				if !streamEvents.producedContent() &&
 					preread.hold(forwardData, streamEvents.eventCount, terminalInChunk, streamEvents.sawTerminal) {
 					// 还没有任何产出，继续压住以保留换候选重试的可能。上游静默时不会再有
@@ -436,6 +427,9 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 
 	forwarder.recordCredentialAttempt(spec.Credential.ID)
 	terminal := forwarder.executor.ExecuteStream(ctx, spec, sink)
+	if terminal.Error == nil {
+		firstData([]byte{'\n'})
+	}
 	// 收尾全程持锁：迟到的计时器回调只会在此之后运行，届时数据已提交或已取走，
 	// 回调不会再写入可能已交给下一次尝试的响应。
 	mu.Lock()
@@ -464,12 +458,6 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 			if err != nil {
 				downstreamErr = executionRedactionStreamFailure()
 			} else if len(tail) > 0 {
-				if !firstResponse {
-					firstResponse = true
-					if input.OnFirstResponse != nil {
-						input.OnFirstResponse()
-					}
-				}
 				if !committed && streamEvents.firstEventWasProviderError() {
 					errorBody = appendExecutionErrorBody(errorBody, tail)
 				} else if !committed && !streamEvents.producedContent() &&
@@ -516,12 +504,6 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 	if input.BufferStream && downstreamErr == nil && terminal.Error == nil && ready != nil &&
 		ready.StatusCode >= http.StatusOK && ready.StatusCode < http.StatusMultipleChoices &&
 		!streamEvents.firstEventWasProviderError() {
-		if !firstResponse {
-			firstResponse = true
-			if input.OnFirstResponse != nil {
-				input.OnFirstResponse()
-			}
-		}
 		committed = true
 		downstreamErr = replayBufferedStream(controller, ready, bufferedData, input.OnStreamReady)
 		bufferedData = nil
