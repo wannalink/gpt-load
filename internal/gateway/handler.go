@@ -1126,6 +1126,7 @@ func (handler *Handler) executeAttempts(
 		}
 		return decision.Retry != health.RetryNone
 	}
+	requestStartedAt := handler.requestNow()
 	for forwardAttempts < forwardAttemptLimit {
 		if ginContext.Request.Context().Err() != nil {
 			recorder.completeCanceled(ginContext.Request.Context(), 0, lastAttemptIndex)
@@ -1155,6 +1156,9 @@ func (handler *Handler) executeAttempts(
 			var err error
 			selection, err = iterator.Next()
 			if errors.Is(err, scheduler.ErrExhausted) {
+				if handler.waitCandidateCooldown(ginContext.Request.Context(), snapshot, iterator, requestStartedAt, forwardAttempts) {
+					continue
+				}
 				break
 			}
 			if err != nil {

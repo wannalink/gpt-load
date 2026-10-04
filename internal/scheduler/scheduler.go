@@ -288,6 +288,16 @@ func (iterator *Iterator) SkipGroup(groupID uint) {
 	iterator.skippedGroups[groupID] = struct{}{}
 }
 
+func (iterator *Iterator) ResetTried() {
+	if iterator == nil {
+		return
+	}
+	iterator.tried = make(map[uint]struct{})
+	for i := range iterator.priorityTiers {
+		iterator.priorityTiers[i].tried = make(map[uint]struct{})
+	}
+}
+
 func (iterator *Iterator) weightedPoolForMode(
 	mode channel.RouteMode,
 	now time.Time,
