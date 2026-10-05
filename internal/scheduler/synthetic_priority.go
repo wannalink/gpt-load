@@ -46,9 +46,6 @@ func (iterator *Iterator) EarliestCandidateAvailable(now time.Time) (time.Time, 
 
 	checkPool := func(pool *candidatePool) {
 		for groupID, targets := range pool.targetsByGroup {
-			if _, skipped := iterator.skippedGroups[groupID]; skipped {
-				continue
-			}
 			creds := viewsByGroup[groupID]
 			if len(creds) == 0 {
 				continue
@@ -81,8 +78,11 @@ func (iterator *Iterator) EarliestCandidateAvailable(now time.Time) (time.Time, 
 						}
 					}
 					if !until.After(now) {
-						earliest = now
-						return
+						if _, skipped := iterator.skippedGroups[groupID]; !skipped {
+							earliest = now
+							return
+						}
+						continue
 					}
 					if earliest.IsZero() || until.Before(earliest) {
 						earliest = until

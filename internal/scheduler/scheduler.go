@@ -319,6 +319,7 @@ func (iterator *Iterator) ResetTried() {
 	for i := range iterator.priorityTiers {
 		iterator.priorityTiers[i].tried = make(map[uint]struct{})
 	}
+	iterator.skippedGroups = make(map[uint]struct{})
 }
 
 func (iterator *Iterator) weightedPoolForMode(
