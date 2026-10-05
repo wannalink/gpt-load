@@ -4,20 +4,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	_ "time/tzdata"
 
 	"gpt-load/internal/execution"
 )
-
-var pacificLoc *time.Location
-
-func init() {
-	var err error
-	pacificLoc, err = time.LoadLocation("America/Los_Angeles")
-	if err != nil {
-		pacificLoc = time.FixedZone("Pacific Time", -8*60*60)
-	}
-}
 
 // GeminiFreeTierQuotaMetric is the specific metric string returned in the Gemini 429 error.
 const GeminiFreeTierQuotaMetric = "generativelanguage.googleapis.com/generate_content_free_tier_requests"
@@ -113,7 +102,7 @@ func parseGeminiRetryDuration(text string) (time.Duration, bool) {
 // geminiFreeTierQuotaDecision inspects the execution attempt for Gemini's free tier quota error
 // ("Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit:")
 // and returns a Decision forcing a model-specific cooldown (EffectCooldownModel) for the specific key-model pair
-// until the next 12:00 AM midnight Pacific Time or the duration parsed from the error message.
+// until the next 12:00 AM midnight UTC or the duration parsed from the error message.
 func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 	if attempt.Evidence == nil {
 		return Decision{}, false
@@ -163,9 +152,9 @@ func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 	} else if d, ok := parseGeminiRetryDuration(markers); ok {
 		res.CooldownUntil = attempt.Now.Add(d)
 	} else {
-		nowPT := attempt.Now.In(pacificLoc)
-		nextMidnightPT := time.Date(nowPT.Year(), nowPT.Month(), nowPT.Day()+1, 0, 0, 0, 0, pacificLoc)
-		res.CooldownUntil = nextMidnightPT
+		nowUTC := attempt.Now.UTC()
+		nextMidnightUTC := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day()+1, 0, 0, 0, 0, time.UTC)
+		res.CooldownUntil = nextMidnightUTC
 	}
 
 	return res, true

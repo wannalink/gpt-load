@@ -167,12 +167,8 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 					t.Errorf("CooldownUntil = %v, want %v", decision.CooldownUntil, tc.wantCooldown)
 				}
 			} else {
-				loc, err := time.LoadLocation("America/Los_Angeles")
-				if err != nil {
-					loc = time.FixedZone("Pacific Time", -8*60*60)
-				}
-				nowPT := tc.attempt.Now.In(loc)
-				expectedCooldown := time.Date(nowPT.Year(), nowPT.Month(), nowPT.Day()+1, 0, 0, 0, 0, loc)
+				nowUTC := tc.attempt.Now.UTC()
+				expectedCooldown := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day()+1, 0, 0, 0, 0, time.UTC)
 				if !decision.CooldownUntil.Equal(expectedCooldown) {
 					t.Errorf("CooldownUntil = %v, want %v", decision.CooldownUntil, expectedCooldown)
 				}
@@ -214,14 +210,10 @@ func TestJudgeExecutionGeminiFreeTierQuota(t *testing.T) {
 		t.Errorf("Retry = %v, want %v", decision.Retry, RetryNextCandidate)
 	}
 
-	loc, err := time.LoadLocation("America/Los_Angeles")
-	if err != nil {
-		loc = time.FixedZone("Pacific Time", -8*60*60)
-	}
-	nowPT := now.In(loc)
-	expectedCooldown := time.Date(nowPT.Year(), nowPT.Month(), nowPT.Day()+1, 0, 0, 0, 0, loc)
+	nowUTC := now.UTC()
+	expectedCooldown := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day()+1, 0, 0, 0, 0, time.UTC)
 	if !decision.CooldownUntil.Equal(expectedCooldown) {
-		t.Errorf("CooldownUntil = %v, want %v (midnight PT)", decision.CooldownUntil, expectedCooldown)
+		t.Errorf("CooldownUntil = %v, want %v (midnight UTC)", decision.CooldownUntil, expectedCooldown)
 	}
 }
 

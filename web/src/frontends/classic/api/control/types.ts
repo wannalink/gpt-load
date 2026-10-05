@@ -57,6 +57,7 @@ export interface GroupCollectionSummaryDto {
 }
 
 export interface GroupCollectionItemDto {
+  priority: number
   concurrency: import('@shared/concurrency').ConcurrencyView
   id: number
   name: string
@@ -143,6 +144,7 @@ export interface GroupEffectiveConfigDto {
 }
 
 export interface GroupSettingsDto {
+  priority: number
   name: string
   price_multiplier: string
   channel_id: string
@@ -246,8 +248,16 @@ export interface CredentialObservationSnapshotDto {
   plan_summary: { name?: string; level?: CredentialPlanLevel }
   account_summary?: CredentialObservationAccountSummaryDto
   quota_windows: CredentialQuotaWindowDto[]
+  credits?: CredentialCreditSummaryDto
   reset_credits_available?: number
   reset_credits?: CredentialResetCreditDto[]
+}
+
+export interface CredentialCreditSummaryDto {
+  balance?: string
+  has_credits?: boolean
+  unlimited?: boolean
+  observed_at_ms?: number
 }
 
 export interface CredentialResetCreditDto {
