@@ -675,7 +675,7 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 	if convertedImages || convertedEmbeddings || mode == channel.RouteNative && (nativeMessagePassthrough || providerSupportsPassthrough(providerKind)) {
 		body, sanitizedHeaders, err := sanitizeNativePassthroughRequest(spec, stream)
 		if err == nil && mode == channel.RouteNative && providerKind == channel.ProviderDeepSeek {
-			body, err = normalizeDeepSeekNativeRequest(body, spec.ClientProtocol)
+			body, err = normalizeDeepSeekNativeRequest(body, spec.ClientProtocol, spec.RemovedParameterPaths)
 		}
 		if err != nil {
 			failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid native request body")
@@ -1046,6 +1046,8 @@ func supportedRequestShape(spec execution.AttemptSpec, stream bool) bool {
 			spec.Method == http.MethodPost && spec.Path == openAIChatPath
 	case protocol.OpenAIResponses:
 		switch spec.Operation {
+		case execution.OperationWebSearch:
+			return !stream && spec.RouteMode == execution.RouteNative && spec.Method == http.MethodPost && spec.Path == "/v1/alpha/search"
 		case execution.OperationResponsesCreate:
 			return spec.Method == http.MethodPost && spec.Path == "/v1/responses"
 		case execution.OperationResponsesRetrieve:

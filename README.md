@@ -29,6 +29,16 @@ English · [中文](README_CN.md) · [日本語](README_JP.md) | [Official Websi
 <details open>
 <summary>Sponsor details (collapsible)</summary>
 
+<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=gptload" target="_blank" rel="sponsored noopener noreferrer"><img src="./screenshot/modelflare-banner-en.png" alt="Modelflare"></a>
+
+Thanks to Modelflare for sponsoring this project! Modelflare: Full strength, stable, nothing watered down. Global SOTA models at a lower cost. Operated by US-based Havenbyte LLC, Modelflare supports GPT, Claude, Gemini, Grok, and other leading models through common compatible protocols, plus 40+ image and video models.
+
+**Cache compensation** is a highlight: selected OpenAI groups (price-first, stable, and premium) guarantee daily cache hit rates of 65%, 75%, or 85%, and if eligible requests fall short, Modelflare refunds the difference, visible on the usage dashboard after settlement.
+
+**Special offers**: a single top-up of US&#36;20 unlocks the GPT discount group at a 0.015x price multiplier, and a single top-up of US&#36;50 unlocks the Claude discount group at a 0.03x multiplier. Register via <a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=gptload" target="_blank" rel="sponsored noopener noreferrer">this exclusive link</a> to get started.
+
+---
+
 <table>
 <tbody>
 <tr>
@@ -40,8 +50,8 @@ English · [中文](README_CN.md) · [日本語](README_JP.md) | [Official Websi
 <td><strong>PackyCode</strong><br>Access leading AI models through PackyCode with one API endpoint and one API key. Enjoy fast, reliable access with automatic failover and dedicated high-speed routes for Codex and Claude Code. Get started with $1 in free credits, a discount on your first top-up, and savings of up to 80% on eligible routes. Pay in RMB with no currency conversion markups or extra top-up fees. <a href="https://www.packyapi.ai/register?aff=ahiS" target="_blank" rel="sponsored noopener noreferrer">Sign up through the link and start building today.</a></td>
 </tr>
 <tr>
-<td width="180"><a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer"><img src="./screenshot/fluxionai-horizontal.png" alt="Fluxion AI" width="150"></a></td>
-<td><strong>One entry point to connect and manage the world's leading AI models</strong><br>Fluxion AI serves individual developers, technical teams, and enterprises with a unified API for connecting to and managing leading AI models worldwide. Dynamic multi-route scheduling improves availability, while model performance, response times, and costs remain transparent and easy to review. Depending on the model and route, API calls can cost 40%–98% less than official or benchmark prices. Visit and sign up now to receive $7 in API credits. (<a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer">Dedicated link</a>)</td>
+<td width="180"><a href="https://sidrune.ai/register?source=github&amp;campaign=gptload&amp;promo=gptload" target="_blank" rel="sponsored noopener noreferrer"><img src="./screenshot/sidrune-ai.png" alt="Sidrune AI" width="150"></a></td>
+<td><strong>One entry point to connect and manage the world's leading AI models</strong><br>Sidrune AI serves individual developers, technical teams, and enterprises with a unified API for connecting to and managing leading AI models worldwide. Dynamic multi-route scheduling improves availability, while model performance, response times, and costs remain transparent and easy to review. Depending on the model and route, API calls can cost 40%–98% less than official or benchmark prices. Visit and sign up now to receive $3 in API credits. (<a href="https://sidrune.ai/register?source=github&amp;campaign=gptload&amp;promo=gptload" target="_blank" rel="sponsored noopener noreferrer">Dedicated link</a>)</td>
 </tr>
 <tr>
 <td width="180"><a href="https://www.axisnow.io/zh"><img src="./screenshot/axisnow.jpg" alt="AxisNow" width="150"></a></td>

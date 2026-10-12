@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { customErrorRuleLabel } from '@shared/error-rules'
 import { ChevronRight } from '@lucide/vue'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
@@ -17,13 +18,19 @@ import {
 import AppButton from '@/components/ui/AppButton.vue'
 import AppDateTime from '@/components/ui/AppDateTime.vue'
 import AppDrawer from '@/components/ui/AppDrawer.vue'
+import CodeBlock from '@/components/ui/CodeBlock.vue'
 import CopyButton from '@/components/ui/CopyButton.vue'
 import CopyChip from '@/components/ui/CopyChip.vue'
 import OverflowTooltip from '@/components/ui/OverflowTooltip.vue'
 import QueryFeedback from '@/components/ui/QueryFeedback.vue'
 import SkeletonSurface from '@/components/ui/SkeletonSurface.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { formatEstimatedCost, formatExactNanoUSD, formatPercent } from '@/lib/format'
+import {
+  formatByteSize,
+  formatEstimatedCost,
+  formatExactNanoUSD,
+  formatPercent,
+} from '@/lib/format'
 
 import { formatCacheHitRate } from '@/lib/cache-rate'
 import {
@@ -124,6 +131,17 @@ const formula = computed(() => {
     input: input || '—',
     output: output || '—',
   }
+})
+
+const requestBodySummary = computed(() => {
+  const recorded = log.value?.request_body
+  if (!recorded) return ''
+  const size = t('monitor.logs.drawer.requestBody.originalSize', {
+    size: formatByteSize(recorded.original_bytes, locale.value),
+  })
+  return recorded.state === 'original'
+    ? size
+    : `${t(`monitor.logs.drawer.requestBody.states.${recorded.state}`)} · ${size}`
 })
 
 const usageStateLabel = computed(() => {
@@ -398,6 +416,12 @@ function toggleAttemptErrorMessage(sequence: number): void {
   else next.add(sequence)
   expandedAttemptErrorMessages.value = next
 }
+function decisionRuleLabel(ruleID: string): string {
+  const rule = customErrorRuleLabel(ruleID)
+  return rule
+    ? t('errorRules.logRule', { source: t('errorRules.' + rule.source), number: rule.number })
+    : ruleID
+}
 </script>
 
 <template>
@@ -564,6 +588,20 @@ function toggleAttemptErrorMessage(sequence: number): void {
             </dd>
           </div>
         </dl>
+      </section>
+
+      <section v-if="log.request_body" class="log-detail__section">
+        <h3>{{ t('monitor.logs.drawer.requestBody.title') }}</h3>
+        <p class="log-request-body__summary">{{ requestBodySummary }}</p>
+        <CodeBlock
+          v-if="log.request_body.body !== null"
+          class="log-request-body__code"
+          :code="log.request_body.body"
+          language="JSON"
+          :copy-label="t('monitor.logs.drawer.requestBody.copy')"
+          :copy-success-label="t('common.copied')"
+          :copy-failure-label="t('common.copyFailed')"
+        />
       </section>
 
       <section
@@ -959,7 +997,7 @@ function toggleAttemptErrorMessage(sequence: number): void {
               <div v-if="attempt.rule_id">
                 <dt>{{ t('monitor.logs.drawer.ruleId') }}</dt>
                 <dd>
-                  <code>{{ attempt.rule_id }}</code>
+                  <code>{{ decisionRuleLabel(attempt.rule_id) }}</code>
                 </dd>
               </div>
               <div>
@@ -1126,6 +1164,20 @@ function toggleAttemptErrorMessage(sequence: number): void {
 
 .log-detail__wide {
   grid-column: 1 / -1;
+}
+
+.log-request-body__summary {
+  margin: 0 0 10px;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}
+
+.log-request-body__summary:last-child {
+  margin-bottom: 0;
+}
+
+.log-request-body__code :deep(pre) {
+  max-height: 360px;
 }
 
 .log-error-message {

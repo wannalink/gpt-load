@@ -53,6 +53,9 @@ func (iterator *Iterator) EarliestCandidateAvailable(now time.Time) (time.Time, 
 			for _, target := range targets {
 				modelID := target.target.UpstreamModelID
 				for _, cred := range creds {
+					if _, tried := iterator.tried[cred.ID]; tried {
+						continue
+					}
 					if iterator.allowedCredentialIDs != nil {
 						if _, allowed := iterator.allowedCredentialIDs[cred.ID]; !allowed {
 							continue

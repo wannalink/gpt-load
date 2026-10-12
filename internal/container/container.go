@@ -202,6 +202,7 @@ func BuildContainer() (*dig.Container, error) {
 		newSubscriptionRuntime,
 		subscription.NewCredentialManager,
 		cpaexecutor.NewAdapter,
+		subscriptionproviders.NewModelCatalogUpdater,
 		newProviderAdapterRegistry,
 		func(registry *provideradapter.Registry) execution.Executor {
 			return execution.NewGeminiThrottledExecutor(registry)
