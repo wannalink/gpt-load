@@ -659,6 +659,7 @@ func rateLimitDecision(attempt ExecutionAttempt, decisionContext DecisionContext
 		effect,
 		ruleID,
 	)
+	result.QuotaCooldown = true
 	if attempt.Evidence.RetryAfter > 0 {
 		result.CooldownUntil = attempt.Now.Add(attempt.Evidence.RetryAfter)
 		result.RuleID = "rate_limit.retry_after"
@@ -752,6 +753,9 @@ func constrainCommittedDecision(result Decision, attempt ExecutionAttempt) Decis
 		result.RuleID = "rate_limit.credential.committed"
 	} else if originalRetry != result.Retry || originalEffect != result.Effect {
 		result.RuleID = "safety.committed"
+	}
+	if result.Effect != EffectCooldownCredential && result.Effect != EffectCooldownModel {
+		result.QuotaCooldown = false
 	}
 	return result
 }

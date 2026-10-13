@@ -88,6 +88,7 @@ type runtimeCredentialRegistry interface {
 	SetCooldownWithChange(credentialID uint, until time.Time) (exists bool, changed bool)
 	SetCooldownWithChangeIfVersion(credentialID uint, expectedVersion uint64, until time.Time) (matched bool, changed bool)
 	SetModelCooldown(state.CredentialRef, string, time.Time, time.Time) (bool, bool)
+	SetQuotaCooldown(state.CredentialRef, string, time.Time, time.Time) (bool, bool)
 	SetGroupModelCooldown(groupID uint, model string, until time.Time, now time.Time)
 	IncrFailure(credentialID uint) (int, bool)
 	SetBlacklistedWithChange(credentialID uint) (exists bool, changed bool)
@@ -345,7 +346,12 @@ func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
 	switch decision.Effect {
 	case health.EffectCooldownModel:
 		handler.mutateCredentialForTarget(ref, func() {
-			accepted, changed := handler.registry.SetModelCooldown(ref, model, decision.CooldownUntil, attemptNow)
+			var accepted, changed bool
+			if decision.QuotaCooldown && model != "" {
+				accepted, changed = handler.registry.SetQuotaCooldown(ref, model, decision.CooldownUntil, attemptNow)
+			} else {
+				accepted, changed = handler.registry.SetModelCooldown(ref, model, decision.CooldownUntil, attemptNow)
+			}
 			if accepted {
 				handler.stats.RecordProblem(credentialID, decision.Category, statusCode, attemptNow)
 			}
@@ -359,7 +365,9 @@ func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
 		handler.mutateCredentialForTarget(ref, func() {
 			until := decision.CooldownUntil
 			exists, changed := false, false
-			if credentialVersion == 0 {
+			if decision.QuotaCooldown && credentialVersion == 0 {
+				exists, changed = handler.registry.SetQuotaCooldown(ref, "", until, attemptNow)
+			} else if credentialVersion == 0 {
 				exists, changed = handler.registry.SetCooldownWithChange(credentialID, until)
 			} else {
 				exists, changed = handler.registry.SetCooldownWithChangeIfVersion(
