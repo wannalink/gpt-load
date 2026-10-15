@@ -84,17 +84,14 @@ SHUTDOWN_EVENT = threading.Event()
 try:
     import spaces  # type: ignore
 
-    gpu_decorator = spaces.GPU
-    HAS_ZEROGPU = True
-    logger.info("Hugging Face ZeroGPU environment detected (spaces imported).")
-except (ImportError, AttributeError):
-    def gpu_decorator(*args, **kwargs):  # type: ignore
-        def _decorator(func):
-            return func
-        if len(args) == 1 and callable(args[0]):
-            return args[0]
-        return _decorator
+    @spaces.GPU(duration=15)
+    def _zerogpu_supervisor_check() -> str:
+        return "ZeroGPU Supervisor Online"
 
+    _check_status = _zerogpu_supervisor_check()
+    HAS_ZEROGPU = True
+    logger.info(f"Hugging Face ZeroGPU environment detected ({_check_status}).")
+except (ImportError, AttributeError):
     spaces = None
     HAS_ZEROGPU = False
     logger.info("Standard CPU / local environment detected (spaces module absent).")
@@ -137,8 +134,7 @@ except ImportError:
     HAS_VON = False
     logger.warning("von-sdk is not installed; decision classification endpoints will be disabled.")
 
-# Real ZeroGPU inference worker function (scanned by ZeroGPU daemon on startup)
-@gpu_decorator(duration=15)
+# Inference worker function (decorated with spaces.GPU on ZeroGPU)
 def execute_inference_gpu(state: Any, questions: Dict[str, Any], model: str) -> Dict[str, Any]:
     """Execute Von System One forward pass on dynamically assigned ZeroGPU slice."""
     if not HAS_VON or VonEngine is None:
@@ -150,6 +146,9 @@ def execute_inference_gpu(state: Any, questions: Dict[str, Any], model: str) -> 
     elif hasattr(resp, "dict"):
         return resp.dict()
     return resp  # type: ignore
+
+if HAS_ZEROGPU and spaces is not None:
+    execute_inference_gpu = spaces.GPU(duration=15)(execute_inference_gpu)
 
 # Warm up model weights during boot while CUDA is active
 if HAS_VON and VonEngine is not None:
