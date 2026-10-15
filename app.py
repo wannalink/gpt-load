@@ -764,18 +764,28 @@ async def systemone_classification_endpoint(
         logger.error(f"Inference error in /v1/systemone: {exc}")
         raise HTTPException(status_code=422, detail=str(exc))
 
-# --- Von Admin On-Demand Upgrade Webhook ---
-@app.post("/v1/admin/upgrade")
-def admin_upgrade_endpoint(request: Request, authorization: Optional[str] = Header(None)):
-    """Trigger manual version check and Space rebuild."""
-    verify_von_token(request, authorization)
-    status = check_pypi_for_updates()
-    rebooted = False
-    if status.get("update_available"):
-        rebooted = trigger_space_factory_restart()
+# --- GitHub Webhook Sync Endpoint ---
+@app.post("/github-sync")
+async def github_sync_webhook(request: Request, x_github_event: Optional[str] = Header(None)):
+    """
+    Receive GitHub push webhooks at https://<space>.hf.space/github-sync.
+    Automatically triggers a Space factory reboot to pull latest code and rebuild.
+    """
+    if x_github_event and x_github_event != "push":
+        return {"status": "ignored", "event": x_github_event}
+
+    try:
+        body = await request.json()
+        ref = body.get("ref", "")
+        if ref and ref != "refs/heads/main":
+            return {"status": "ignored", "ref": ref}
+    except Exception:
+        pass
+
+    logger.info("GitHub push webhook received on main branch. Triggering Space synchronization and rebuild...")
+    rebooted = trigger_space_factory_restart()
     return {
-        "status": "upgrade_initiated" if rebooted else "checked",
-        "update_status": status,
+        "status": "sync_triggered" if rebooted else "failed",
         "factory_reboot_triggered": rebooted,
     }
 
