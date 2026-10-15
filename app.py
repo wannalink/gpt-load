@@ -247,6 +247,17 @@ def hydrate_database_from_bucket():
             logger.info("Working database hydrated successfully.")
         except Exception as exc:
             logger.error(f"Failed to copy database from persistent bucket: {exc}")
+
+        # Verify integrity of the hydrated working database
+        try:
+            test_conn = sqlite3.connect(f"file:{local_db}?mode=ro", uri=True, timeout=10.0)
+            res = test_conn.execute("PRAGMA integrity_check(1)").fetchone()
+            test_conn.close()
+            if not res or res[0] != "ok":
+                logger.warning("Working database failed integrity check; re-copying clean snapshot from persistent bucket...")
+                shutil.copyfile(persistent_db, local_db)
+        except Exception as e:
+            logger.warning(f"Database hydration verification notice: {e}")
     else:
         logger.info(f"No existing database found at {persistent_db}. Starting fresh in {local_db}.")
 
@@ -279,8 +290,10 @@ def sync_db_to_persistent_storage() -> bool:
             except Exception:
                 pass
 
-        # Step 1: Use SQLite Online Backup API for lock-free consistent snapshot
-        src_conn = sqlite3.connect(local_db, timeout=30.0)
+        # Step 1: Use SQLite Online Backup API on a read-only URI connection.
+        # mode=ro ensures Python never modifies WAL headers, acquires write locks,
+        # or triggers checkpoints, preventing SQLITE_IOERR_SHORT_READ (522) conflicts with Go.
+        src_conn = sqlite3.connect(f"file:{local_db}?mode=ro", uri=True, timeout=30.0)
         try:
             dst_conn = sqlite3.connect(temp_stage, timeout=30.0)
             try:
