@@ -342,10 +342,97 @@ def background_db_sync_poller():
         sync_db_to_persistent_storage()
 
 # ---------------------------------------------------------------------------
-# 5. GPT-Load Process Manager
+# 5. GPT-Load Process Manager & Automated On-Boot Build Pipeline
 # ---------------------------------------------------------------------------
+GO_BIN_PATH = "/tmp/go/bin/go"
+GO_TARBALL_URL = "https://go.dev/dl/go1.24.0.linux-amd64.tar.gz"
+
+def ensure_modern_go_compiler() -> Optional[str]:
+    """Ensure Go >= 1.22 is available, downloading official Go 1.24.0 binary on demand if missing."""
+    import re
+
+    system_go = shutil.which("go")
+    if system_go:
+        try:
+            out = subprocess.check_output([system_go, "version"], text=True)
+            m = re.search(r"go1\.(\d+)", out)
+            if m and int(m.group(1)) >= 22:
+                return system_go
+        except Exception:
+            pass
+
+    if os.path.exists(GO_BIN_PATH):
+        return GO_BIN_PATH
+
+    logger.info("System Go compiler missing or outdated. Downloading official Go 1.24.0 toolchain...")
+    try:
+        os.makedirs("/tmp", exist_ok=True)
+        tar_path = "/tmp/go1.24.0.linux-amd64.tar.gz"
+        urllib.request.urlretrieve(GO_TARBALL_URL, tar_path)
+        logger.info("Extracting Go 1.24.0 toolchain to /tmp/go...")
+        import tarfile
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(path="/tmp")
+        if os.path.exists(tar_path):
+            os.remove(tar_path)
+        if os.path.exists(GO_BIN_PATH):
+            logger.info("Go 1.24.0 toolchain successfully provisioned in /tmp/go.")
+            return GO_BIN_PATH
+    except Exception as exc:
+        logger.error(f"Failed to download/provision Go 1.24.0 toolchain: {exc}")
+
+    return None
+
+def ensure_web_ui_built():
+    """Build Vue 3 / Vite assets in web/ if internal/webui/dist/index.html is missing."""
+    dist_index = os.path.join("internal", "webui", "dist", "index.html")
+    if os.path.exists(dist_index) and os.path.getsize(dist_index) > 0:
+        return
+
+    web_dir = os.path.abspath("web")
+    if not os.path.exists(web_dir) or not os.path.exists(os.path.join(web_dir, "package.json")):
+        return
+
+    npm_bin = shutil.which("npm") or shutil.which("pnpm")
+    if not npm_bin:
+        logger.warning("Node.js/npm not found in PATH; skipping web UI compilation.")
+        return
+
+    logger.info("Compiling Vue 3 / Vite Web UI assets in web/...")
+    try:
+        subprocess.check_call([npm_bin, "install", "--no-audit", "--no-fund"], cwd=web_dir, timeout=120)
+        subprocess.check_call([npm_bin, "run", "build"], cwd=web_dir, timeout=120)
+        logger.info("Web UI compiled successfully into internal/webui/dist.")
+    except Exception as exc:
+        logger.error(f"Failed to compile Web UI assets: {exc}")
+
 def resolve_gpt_load_binary() -> Optional[str]:
-    """Find the gpt-load binary in the current directory or PATH, or build it if Go is installed."""
+    """Find or automatically build gpt-load binary in container."""
+    local_exec = "/tmp/gpt-load-exec"
+
+    # 1. First check if executable already exists locally
+    if os.path.exists(local_exec) and os.path.isfile(local_exec) and os.path.getsize(local_exec) > 0:
+        try:
+            os.chmod(local_exec, 0o755)
+        except Exception:
+            pass
+        return local_exec
+
+    # 2. Check persistent storage bucket
+    bucket_bin = os.path.join(HF_STORAGE_DIR, "gpt-load")
+    if os.path.exists(bucket_bin) and os.path.isfile(bucket_bin) and os.path.getsize(bucket_bin) > 0:
+        logger.info(
+            f"Found precompiled gpt-load binary in persistent bucket ({bucket_bin}, "
+            f"{os.path.getsize(bucket_bin) / (1024*1024):.1f} MB). Staging executable to {local_exec}..."
+        )
+        try:
+            shutil.copyfile(bucket_bin, local_exec)
+            os.chmod(local_exec, 0o755)
+            return local_exec
+        except Exception as e:
+            logger.warning(f"Error copying gpt-load binary from persistent bucket: {e}")
+
+    # 3. Check current workspace directory
     candidates = [
         GPT_LOAD_BIN,
         os.path.abspath("gpt-load"),
@@ -354,26 +441,39 @@ def resolve_gpt_load_binary() -> Optional[str]:
     ]
     for c in candidates:
         if c and os.path.exists(c) and os.path.isfile(c):
+            try:
+                os.chmod(c, 0o755)
+            except Exception:
+                pass
             return os.path.abspath(c)
 
-    # If precompiled binary is not present, check if Go compiler is available to build on boot
-    go_bin = shutil.which("go")
-    if go_bin and os.path.exists("main.go"):
-        logger.info("gpt-load binary not found, but Go toolchain detected. Compiling gpt-load from source...")
+    # 4. Automated on-boot compilation pipeline
+    logger.info("gpt-load binary absent. Initiating automated on-boot build pipeline...")
+    ensure_web_ui_built()
+    go_cmd = ensure_modern_go_compiler()
+    if go_cmd and os.path.exists("main.go"):
+        logger.info(f"Compiling gpt-load using {go_cmd}...")
         try:
             build_env = os.environ.copy()
             build_env["CGO_ENABLED"] = "0"
+            build_env["PATH"] = f"/tmp/go/bin:{build_env.get('PATH', '')}"
             subprocess.check_call(
-                [go_bin, "build", "-ldflags", "-s -w", "-o", "gpt-load", "."],
+                [go_cmd, "build", "-ldflags", "-s -w", "-o", local_exec, "."],
                 env=build_env,
-                timeout=180,
+                timeout=300,
             )
-            target = os.path.abspath("gpt-load")
-            if os.path.exists(target):
+            if os.path.exists(local_exec):
+                os.chmod(local_exec, 0o755)
                 logger.info("gpt-load binary compiled successfully on container boot.")
-                return target
+                if os.path.exists(HF_STORAGE_DIR):
+                    try:
+                        shutil.copyfile(local_exec, bucket_bin)
+                        logger.info("Saved compiled binary to persistent bucket for instant subsequent boots.")
+                    except Exception as e:
+                        logger.warning(f"Notice saving binary to persistent bucket: {e}")
+                return local_exec
         except Exception as e:
-            logger.error(f"Failed to compile gpt-load from source: {e}")
+            logger.error(f"Automated build pipeline failed: {e}")
 
     return None
 
