@@ -795,76 +795,6 @@ async def websocket_proxy_endpoint(client_ws: WebSocket, path: str):
         except Exception:
             pass
 
-# --- HTTP Data-Plane, Control-Plane, & WebUI Reverse-Proxy ---
-HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    "host",
-}
-
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def reverse_proxy_handler(request: Request, path: str):
-    """
-    Transparently stream all GPT-Load data-plane (/v1/*), control-plane (/api/*),
-    and WebUI static asset requests to internal gpt-load engine.
-    """
-    if http_client is None:
-        return Response("Gateway initializing", status_code=503)
-
-    target_url = httpx.URL(
-        path=f"/{path}",
-        query=request.url.query.encode("utf-8") if request.url.query else None,
-    )
-
-    req_headers = dict(request.headers)
-    for hop in HOP_BY_HOP_HEADERS:
-        req_headers.pop(hop, None)
-
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    existing_xff = req_headers.get("x-forwarded-for")
-    req_headers["x-forwarded-for"] = f"{existing_xff}, {client_ip}" if existing_xff else client_ip
-    req_headers["x-forwarded-proto"] = request.url.scheme
-    req_headers["x-forwarded-host"] = request.headers.get("host", f"0.0.0.0:{PUBLIC_PORT}")
-
-    try:
-        upstream_req = http_client.build_request(
-            method=request.method,
-            url=target_url,
-            headers=req_headers,
-            content=request.stream(),
-        )
-        upstream_resp = await http_client.send(upstream_req, stream=True)
-
-        resp_headers = dict(upstream_resp.headers)
-        for hop in HOP_BY_HOP_HEADERS:
-            resp_headers.pop(hop, None)
-        resp_headers.pop("content-length", None)
-        resp_headers.pop("content-encoding", None)
-
-        # Optimize for Server-Sent Events / LLM token streaming
-        is_sse = "text/event-stream" in resp_headers.get("content-type", "")
-        if is_sse:
-            resp_headers["cache-control"] = "no-cache"
-            resp_headers["x-accel-buffering"] = "no"
-
-        return StreamingResponse(
-            upstream_resp.aiter_raw(),
-            status_code=upstream_resp.status_code,
-            headers=resp_headers,
-            background=upstream_resp.aclose,
-        )
-    except httpx.ConnectError:
-        return Response("Internal GPT-Load engine unavailable or starting up.", status_code=503)
-    except Exception as exc:
-        logger.error(f"Ingress proxy error for /{path}: {exc}")
-        return Response(f"Proxy error: {exc}", status_code=502)
-
 # ---------------------------------------------------------------------------
 # 7. Operational Dashboard UI (Gradio Mounted at /gradio)
 # ---------------------------------------------------------------------------
@@ -941,8 +871,81 @@ with gr.Blocks(title="Von Decision Server") as demo:
 # Mount Gradio Blocks at /gradio so root / remains dedicated to GPT-Load Web UI
 app = gr.mount_gradio_app(app, demo, path="/gradio")
 
+# --- HTTP Data-Plane, Control-Plane, & WebUI Reverse-Proxy ---
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+}
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def reverse_proxy_handler(request: Request, path: str):
+    """
+    Transparently stream all GPT-Load data-plane (/v1/*), control-plane (/api/*),
+    and WebUI static asset requests to internal gpt-load engine.
+    """
+    if path == "gradio" or path.startswith("gradio/"):
+        return await demo.app(request.scope, request.receive, request.send)
+
+    if http_client is None:
+        return Response("Gateway initializing", status_code=503)
+
+    target_url = httpx.URL(
+        path=f"/{path}",
+        query=request.url.query.encode("utf-8") if request.url.query else None,
+    )
+
+    req_headers = dict(request.headers)
+    for hop in HOP_BY_HOP_HEADERS:
+        req_headers.pop(hop, None)
+
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    existing_xff = req_headers.get("x-forwarded-for")
+    req_headers["x-forwarded-for"] = f"{existing_xff}, {client_ip}" if existing_xff else client_ip
+    req_headers["x-forwarded-proto"] = request.url.scheme
+    req_headers["x-forwarded-host"] = request.headers.get("host", f"0.0.0.0:{PUBLIC_PORT}")
+
+    try:
+        upstream_req = http_client.build_request(
+            method=request.method,
+            url=target_url,
+            headers=req_headers,
+            content=request.stream(),
+        )
+        upstream_resp = await http_client.send(upstream_req, stream=True)
+
+        resp_headers = dict(upstream_resp.headers)
+        for hop in HOP_BY_HOP_HEADERS:
+            resp_headers.pop(hop, None)
+        resp_headers.pop("content-length", None)
+        resp_headers.pop("content-encoding", None)
+
+        # Optimize for Server-Sent Events / LLM token streaming
+        is_sse = "text/event-stream" in resp_headers.get("content-type", "")
+        if is_sse:
+            resp_headers["cache-control"] = "no-cache"
+            resp_headers["x-accel-buffering"] = "no"
+
+        return StreamingResponse(
+            upstream_resp.aiter_raw(),
+            status_code=upstream_resp.status_code,
+            headers=resp_headers,
+            background=upstream_resp.aclose,
+        )
+    except httpx.ConnectError:
+        return Response("Internal GPT-Load engine unavailable or starting up.", status_code=503)
+    except Exception as exc:
+        logger.error(f"Ingress proxy error for /{path}: {exc}")
+        return Response(f"Proxy error: {exc}", status_code=502)
+
 # ---------------------------------------------------------------------------
-# 9. Main Supervisor Entrypoint
+# 8. Main Supervisor Entrypoint
 # ---------------------------------------------------------------------------
 def signal_handler(signum, frame):
     """Handle termination signals from Hugging Face container supervisor."""
