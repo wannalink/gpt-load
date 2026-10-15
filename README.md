@@ -5,6 +5,7 @@ colorFrom: blue
 colorTo: purple
 sdk: gradio
 sdk_version: 5.16.0
+python_version: "3.12"
 app_file: app.py
 app_port: 7860
 suggested_hardware: zero-a10g
