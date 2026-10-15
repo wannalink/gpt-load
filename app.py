@@ -578,6 +578,9 @@ class SystemOneRequest(BaseModel):
             raise ValueError("questions must contain at least one entry")
         return v
 
+AUTH_KEY = os.getenv("AUTH_KEY")
+VON_API_KEY = os.getenv("VON_API_KEY")
+
 def is_trusted_local_client(request: Request) -> bool:
     """
     Check if request originates directly from local container loopback (e.g. from GPT-Load).
@@ -591,16 +594,23 @@ def verify_von_token(request: Request, authorization: Optional[str]):
     """
     Verify API key for external calls.
     Internal loopback calls directly from GPT-Load bypass authentication automatically.
+    External calls must provide either VON_API_KEY or AUTH_KEY to prevent unauthorized ZeroGPU quota drainage.
     """
     if is_trusted_local_client(request):
         return  # Trusted internal loopback
-    if not VON_API_KEY:
-        return  # No key configured; open access
+
+    valid_keys = [k for k in (VON_API_KEY, AUTH_KEY) if k]
+    if not valid_keys:
+        # If no key is set, deny external access by default to prevent unauthorized GPU quota drainage
+        raise HTTPException(status_code=401, detail="Access denied: AUTH_KEY or VON_API_KEY must be configured in Space secrets.")
+
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Bearer token for Von API")
+
     token = authorization.split("Bearer ", 1)[1].strip()
-    if not hmac.compare_digest(token.encode("utf-8"), VON_API_KEY.encode("utf-8")):
-        raise HTTPException(status_code=401, detail="Unauthorized: invalid Von API key")
+    is_valid = any(hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in valid_keys)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Unauthorized: invalid API key")
 
 @app.on_event("startup")
 async def on_startup():
@@ -666,8 +676,9 @@ def health_and_status():
     }
 
 @app.post("/status/sync")
-def trigger_db_sync():
+def trigger_db_sync(request: Request, authorization: Optional[str] = Header(None)):
     """Manually trigger immediate working database sync to the Storage Bucket."""
+    verify_von_token(request, authorization)
     success = sync_db_to_persistent_storage()
     return {"success": success, "status": LAST_DB_SYNC_STATUS}
 
@@ -800,10 +811,19 @@ async def websocket_proxy_endpoint(client_ws: WebSocket, path: str):
 # ---------------------------------------------------------------------------
 import gradio as gr  # type: ignore
 
-def test_decision_ui(prompt_text: str):
-    """Test function for the interactive Gradio demo tab."""
+def test_decision_ui(prompt_text: str, api_key_input: str = ""):
+    """Test function for the interactive Gradio demo tab with authentication check."""
     if not prompt_text.strip():
         return "Please enter a prompt to classify."
+
+    valid_keys = [k for k in (VON_API_KEY, AUTH_KEY) if k]
+    if valid_keys:
+        token = (api_key_input or "").strip()
+        if token.startswith("Bearer "):
+            token = token.split("Bearer ", 1)[1].strip()
+        is_valid = any(hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in valid_keys)
+        if not is_valid:
+            return {"error": "Unauthorized: Valid AUTH_KEY or VON_API_KEY required to execute ZeroGPU inference."}
     try:
         q = {
             "complexity": {
@@ -862,11 +882,12 @@ with gr.Blocks(title="Von Decision Server") as demo:
     """)
 
     with gr.Accordion("Interactive Quick-Test (Von Decision Classification)", open=False):
-        gr.Markdown("Test Von decision classification live on ZeroGPU:")
+        gr.Markdown("Test Von decision classification live on ZeroGPU (requires AUTH_KEY or VON_API_KEY):")
+        key_box = gr.Textbox(label="API Key / Auth Key", placeholder="Enter AUTH_KEY or VON_API_KEY...", type="password")
         input_box = gr.Textbox(label="Input Prompt / State", placeholder="e.g. Write a distributed Raft consensus implementation in Go...")
         test_btn = gr.Button("Evaluate Decision", variant="primary")
         output_json = gr.JSON(label="Decision Result")
-        test_btn.click(fn=test_decision_ui, inputs=[input_box], outputs=[output_json])
+        test_btn.click(fn=test_decision_ui, inputs=[input_box, key_box], outputs=[output_json])
 
 # Mount Gradio Blocks at /gradio so root / remains dedicated to GPT-Load Web UI
 app = gr.mount_gradio_app(app, demo, path="/gradio")
