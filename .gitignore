@@ -15,6 +15,7 @@ go.work
 # Local environment and secrets
 .env*
 !.env.example
+!.env.hf-spaces.example
 keys.txt
 *.key
 *.pem

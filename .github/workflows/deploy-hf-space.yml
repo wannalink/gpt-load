@@ -1,0 +1,69 @@
+name: Deploy to Hugging Face Spaces
+
+on:
+  workflow_dispatch:
+    inputs:
+      space_repo:
+        description: 'Hugging Face Space repository (e.g. username/gpt-load-gateway)'
+        required: true
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - 'app.py'
+      - 'requirements.txt'
+      - 'packages.txt'
+      - 'internal/**'
+      - 'web/**'
+      - 'main.go'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build pure-Go Linux amd64 binary
+        run: |
+          VERSION="$(git describe --tags --always 2>/dev/null || echo '2.0.0-dev')"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-s -w -X gpt-load/internal/platform/version.Version=${VERSION}" \
+            -o gpt-load
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SPACE_REPO: ${{ inputs.space_repo || vars.HF_SPACE_REPO }}
+        run: |
+          if [ -z "$SPACE_REPO" ] || [ -z "$HF_TOKEN" ]; then
+            echo "Skipping push: HF_SPACE_REPO or HF_TOKEN is not configured."
+            exit 0
+          fi
+          
+          mkdir -p /tmp/hf-space
+          cp gpt-load app.py requirements.txt packages.txt README.md /tmp/hf-space/
+          
+          cd /tmp/hf-space
+          git init -b main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Deploy from GitHub Actions commit ${{ github.sha }}"
+          
+          git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${SPACE_REPO}" main

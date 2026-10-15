@@ -1,0 +1,4 @@
+ca-certificates
+sqlite3
+curl
+golang-go

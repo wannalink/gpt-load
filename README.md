@@ -1,3 +1,14 @@
+---
+title: GPT-Load Gateway
+emoji: ⚡
+colorFrom: blue
+colorTo: purple
+sdk: gradio
+sdk_version: 5.16.0
+app_file: app.py
+app_port: 7860
+suggested_hardware: zero-a10g
+---
 <div align="center">
 
 <img src="./web/public/favicon.svg" alt="GPT-Load" width="96">

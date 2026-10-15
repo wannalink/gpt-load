@@ -13,8 +13,6 @@ primary_region = 'arn'
   DATA_DIR = '/app/data'
   HOST = '0.0.0.0'
   PORT = '3001'
-  GOMEMLIMIT = '150MiB'
-  GOGC = '60'
   SYNTHETIC_MODELS = '''
   [
     {
