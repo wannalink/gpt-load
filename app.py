@@ -52,7 +52,6 @@ def is_huggingface_space() -> bool:
 START_TIME = time.time()
 PUBLIC_PORT = int(os.getenv("PORT", "7860"))
 INTERNAL_PORT = int(os.getenv("GPT_LOAD_INTERNAL_PORT", "3001"))
-INTERNAL_VON_PORT = int(os.getenv("INTERNAL_VON_PORT", "7861"))
 GPT_LOAD_BIN = os.getenv("GPT_LOAD_BIN_PATH", "./gpt-load")
 
 SPACE_ID = os.getenv("SPACE_ID")
@@ -501,8 +500,7 @@ def start_gpt_load_process() -> Optional[subprocess.Popen]:
     env["TRUSTED_PROXIES"] = "127.0.0.1"
 
     # Pass local Von endpoints into environment for convenience
-    env["VON_INTERNAL_BASE_URL"] = f"http://127.0.0.1:{INTERNAL_VON_PORT}/v1"
-    env["VON_PATH_BASE_URL"] = f"http://127.0.0.1:{PUBLIC_PORT}/von/v1"
+    env["VON_BASE_URL"] = f"http://127.0.0.1:{PUBLIC_PORT}/von/v1"
 
     # Remove Fly.io 256MB memory constraints to leverage 16GB host RAM
     env.pop("GOMEMLIMIT", None)
@@ -651,8 +649,9 @@ def health_and_status():
             "device": os.environ.get("VON_DEVICE", "cuda"),
             "update_status": UPDATE_STATUS,
             "local_endpoints": {
-                "dedicated_port": f"http://127.0.0.1:{INTERNAL_VON_PORT}/v1",
-                "path_based": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
+                "local_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
+                "decision_path": "/systemone",
+                "models_path": "/models",
             },
         },
         "gpt_load": {
@@ -683,15 +682,13 @@ def von_configuration_info():
         "version": CURRENT_VON_VERSION,
         "zerogpu_enabled": HAS_ZEROGPU,
         "local_endpoints": {
-            "dedicated_loopback_base_url": f"http://127.0.0.1:{INTERNAL_VON_PORT}/v1",
-            "path_based_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
+            "local_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
             "decision_path": "/systemone",
             "models_path": "/models",
         },
         "gpt_load_channel_setup": {
             "channel_type": "jev",
-            "recommended_base_url": f"http://127.0.0.1:{INTERNAL_VON_PORT}/v1",
-            "fallback_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
+            "recommended_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
             "upstream_model": "von-latest",
             "auth_note": "Authentication automatically bypassed for local container requests.",
         },
@@ -870,60 +867,7 @@ async def reverse_proxy_handler(request: Request, path: str):
         return Response(f"Proxy error: {exc}", status_code=502)
 
 # ---------------------------------------------------------------------------
-# 7. Dedicated Internal Loopback Listener for Von (Port 7861)
-# ---------------------------------------------------------------------------
-def start_internal_von_listener():
-    """
-    Dedicated internal listener running strictly on loopback (127.0.0.1:INTERNAL_VON_PORT).
-    Provides native /v1/systemone and /v1/models endpoints for GPT-Load with 0 auth friction
-    and sub-millisecond local socket latency.
-    """
-    import uvicorn  # type: ignore
-
-    internal_von_app = FastAPI(title="Von Internal Loopback API", docs_url=None, redoc_url=None)
-
-    @internal_von_app.get("/health")
-    @internal_von_app.get("/v1/health")
-    def _local_health():
-        return {
-            "status": "ok",
-            "service": "von-internal-loopback",
-            "version": CURRENT_VON_VERSION,
-            "zerogpu": HAS_ZEROGPU,
-        }
-
-    @internal_von_app.get("/v1/models")
-    @internal_von_app.get("/models")
-    def _local_models():
-        return list_von_models()
-
-    @internal_von_app.post("/v1/systemone")
-    @internal_von_app.post("/systemone")
-    async def _local_systemone(req: SystemOneRequest):
-        t0 = time.perf_counter()
-        resp = await asyncio.to_thread(
-            execute_inference_gpu,
-            state=req.state,
-            questions=dict(req.questions),
-            model=req.model,
-        )
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        logger.info(f"[VON-LOOPBACK:{INTERNAL_VON_PORT}] Decision '{req.model}' executed in {elapsed_ms:.2f}ms")
-        return resp
-
-    config = uvicorn.Config(
-        internal_von_app,
-        host="127.0.0.1",
-        port=INTERNAL_VON_PORT,
-        log_level="warning",
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
-    logger.info(f"Dedicated Von loopback listener running on http://127.0.0.1:{INTERNAL_VON_PORT}")
-    server.run()
-
-# ---------------------------------------------------------------------------
-# 8. Operational Dashboard UI (Gradio Mounted at /gradio)
+# 7. Operational Dashboard UI (Gradio Mounted at /gradio)
 # ---------------------------------------------------------------------------
 import gradio as gr  # type: ignore
 
@@ -976,7 +920,7 @@ with gr.Blocks(title="Von Decision Server") as demo:
 
     ### ⚡ Active Endpoints
     - **GPT-Load Web Console**: `GET /` *(Native Vue 3 / Vite Management Dashboard)*
-    - **Dedicated Internal Loopback**: `http://127.0.0.1:{INTERNAL_VON_PORT}/v1` *(Zero Auth, Native Jev Paths)*
+    - **Local Von Endpoint**: `http://127.0.0.1:{PUBLIC_PORT}/von/v1` *(Zero Auth Loopback)*
     - **Von Decision API**: `POST /von/v1/systemone` & `POST /v1/systemone` *(Sub-25ms ZeroGPU ModernBERT)*
     - **Decision Catalog**: `GET /von/v1/models` *(TypeSafe / OpenAI compatible)*
     - **Keep-Alive Probe**: `GET /healthz` *(Zero GPU quota consumed, for external cron)*
@@ -1014,7 +958,7 @@ if __name__ == "__main__":
 
     logger.info("==================================================")
     logger.info("Initializing Unified GPT-Load & Von Space")
-    logger.info(f"Public Port: {PUBLIC_PORT} • Internal Port: {INTERNAL_PORT} • Von Loopback: {INTERNAL_VON_PORT}")
+    logger.info(f"Public Port: {PUBLIC_PORT} • Internal Port: {INTERNAL_PORT}")
     logger.info(f"Persistent Storage: {HF_STORAGE_DIR}")
     logger.info(f"Working Data Dir: {LOCAL_DATA_DIR}")
     logger.info(f"ZeroGPU Available: {HAS_ZEROGPU}")
@@ -1024,11 +968,7 @@ if __name__ == "__main__":
     # 1. Hydrate working database from persistent bucket
     hydrate_database_from_bucket()
 
-    # 2. Launch dedicated internal loopback listener for Von (127.0.0.1:7861)
-    internal_von_thread = threading.Thread(target=start_internal_von_listener, daemon=True)
-    internal_von_thread.start()
-
-    # 3. Launch gpt-load Go binary
+    # 2. Launch gpt-load Go binary
     start_gpt_load_process()
     wait_for_gpt_load_ready(timeout_seconds=30)
 
