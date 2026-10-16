@@ -970,6 +970,12 @@ async def reverse_proxy_handler(request: Request, path: str):
         resp_headers.pop("content-length", None)
         resp_headers.pop("content-encoding", None)
 
+        # Allow Hugging Face Hub to embed the Space UI inside the HF iframe
+        resp_headers.pop("x-frame-options", None)
+        resp_headers["content-security-policy"] = (
+            "frame-ancestors 'self' https://huggingface.co https://*.huggingface.co https://*.hf.space;"
+        )
+
         # Optimize for Server-Sent Events / LLM token streaming
         is_sse = "text/event-stream" in resp_headers.get("content-type", "")
         if is_sse:
