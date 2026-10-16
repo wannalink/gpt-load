@@ -484,7 +484,7 @@ func decisionForExecutionCategory(
 		if retryableUpstreamResponse(attempt) {
 			if !requestMayReplayAfterResponse(decisionContext) &&
 				attempt.Evidence.ReplaySafety != execution.ReplaySafetyRejectedBeforeProcessing {
-				return decision(category, origin, scope, RetryNone, EffectNone, ruleID)
+				return decision(category, origin, scope, RetryNone, EffectNone, "safety.operation_replay_unsafe")
 			}
 			if ruleID == "fallback.ambiguous" {
 				ruleID = "fallback.upstream_response"
@@ -513,22 +513,9 @@ func retryableUpstreamResponse(attempt ExecutionAttempt) bool {
 	case execution.ErrorKindProvider:
 		switch evidence.Code {
 		case "upstream_protocol_error", "upstream_response_incomplete":
-			if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
-				return true
-			}
 			return false
 		}
 		return attempt.ResponseStarted()
-	case execution.ErrorKindTransport:
-		if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
-			return true
-		}
-		return false
-	case execution.ErrorKindTimeout:
-		if !attempt.DownstreamCommitted && isSuccessStatus(attempt.StatusCode) {
-			return true
-		}
-		return false
 	default:
 		return false
 	}

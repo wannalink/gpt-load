@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/httproute"
+	"gpt-load/internal/storage/models"
 )
 
 func TestSyntheticModelsCRUD(t *testing.T) {
@@ -187,5 +189,66 @@ func TestSyntheticModelsHTTP(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAutoModelSettingsAcceptSyntheticModelTarget(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	// 1. Create a synthetic model
+	_, err := fixture.service.CreateSyntheticModel(t.Context(), SyntheticModelCreateRequest{
+		Name:         "gemini-flash-auto-best",
+		TargetModels: []string{"gemini-flash-latest", "gemini-3.8-flash"},
+	})
+	if err != nil {
+		t.Fatalf("create synthetic model: %v", err)
+	}
+
+	// 2. Create a JEV channel group for the decision model
+	_, err = fixture.service.CreateGroup(t.Context(), GroupCreateRequest{
+		Name:           stringPointer("Jev Router"),
+		ChannelID:      "jev",
+		ConnectionType: models.ConnectionTypeAPIKey,
+		Params:         json.RawMessage(`{"base_url":"https://api.typesafe.ai/v1"}`),
+		Credentials:    "test-key",
+		Models: optionalGroupModels{
+			Set: true,
+			Values: []GroupModel{
+				{ID: "von-latest", Alias: "von-latest", AliasEnabled: true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	// 3. Save auto_model settings targeting the synthetic model
+	autoModelJSON := `{
+		"enabled": true,
+		"model": "von-latest",
+		"timeout_seconds": 2,
+		"models": [
+			{
+				"id": "entry-1",
+				"name": "auto-smart",
+				"fallback": "preset-1",
+				"presets": [
+					{
+						"id": "preset-1",
+						"name": "Low",
+						"model": "gemini-flash-auto-best",
+						"description": "Routine tasks",
+						"parameter_overrides": []
+					}
+				]
+			}
+		]
+	}`
+
+	_, err = fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
+		Settings: map[string]json.RawMessage{"auto_model": json.RawMessage(autoModelJSON)},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings with synthetic model target failed: %v", err)
 	}
 }

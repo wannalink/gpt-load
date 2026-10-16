@@ -1,8 +1,12 @@
 package state
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+
+	"gpt-load/internal/storage/models"
 )
 
 type SyntheticModelConfig struct {
@@ -43,4 +47,68 @@ func compileSyntheticModels(snapshot *ConfigSnapshot, configs []SyntheticModelCo
 		snapshot.SyntheticModels[name] = cleanedTargets
 	}
 	return nil
+}
+
+// MapSyntheticModels transforms synthetic model DB rows and SYNTHETIC_MODELS environment overrides into configs.
+func MapSyntheticModels(rows []models.SyntheticModel) ([]SyntheticModelConfig, error) {
+	configByName := make(map[string]SyntheticModelConfig, len(rows))
+	order := make([]string, 0, len(rows))
+	for _, row := range rows {
+		var targetModels []string
+		if len(row.TargetModels) > 0 {
+			if err := json.Unmarshal(row.TargetModels, &targetModels); err != nil {
+				return nil, fmt.Errorf("unmarshal synthetic model %d target models: %w", row.ID, err)
+			}
+		}
+		configByName[row.Name] = SyntheticModelConfig{
+			ID:           row.ID,
+			Name:         row.Name,
+			Description:  row.Description,
+			TargetModels: targetModels,
+			Enabled:      row.Enabled,
+		}
+		order = append(order, row.Name)
+	}
+	if envJSON := strings.TrimSpace(os.Getenv("SYNTHETIC_MODELS")); envJSON != "" {
+		type envSyntheticModel struct {
+			Name         string   `json:"name"`
+			Description  string   `json:"description"`
+			TargetModels []string `json:"target_models"`
+			Enabled      *bool    `json:"enabled"`
+		}
+		var envModels []envSyntheticModel
+		if err := json.Unmarshal([]byte(envJSON), &envModels); err == nil {
+			for _, em := range envModels {
+				if strings.TrimSpace(em.Name) == "" {
+					continue
+				}
+				enabled := true
+				if em.Enabled != nil {
+					enabled = *em.Enabled
+				}
+				cfg, exists := configByName[em.Name]
+				if exists {
+					cfg.TargetModels = em.TargetModels
+					if em.Description != "" {
+						cfg.Description = em.Description
+					}
+					cfg.Enabled = enabled
+					configByName[em.Name] = cfg
+				} else {
+					configByName[em.Name] = SyntheticModelConfig{
+						Name:         em.Name,
+						Description:  em.Description,
+						TargetModels: em.TargetModels,
+						Enabled:      enabled,
+					}
+					order = append(order, em.Name)
+				}
+			}
+		}
+	}
+	configs := make([]SyntheticModelConfig, 0, len(order))
+	for _, name := range order {
+		configs = append(configs, configByName[name])
+	}
+	return configs, nil
 }

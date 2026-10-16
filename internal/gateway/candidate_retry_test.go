@@ -4,16 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"gpt-load/internal/channel"
+	"gpt-load/internal/dialect"
+	"gpt-load/internal/protocol"
 	"gpt-load/internal/state"
 )
 
@@ -267,5 +271,72 @@ func TestAutoModelCandidateCooldownAutoRetriesAndSucceeds(t *testing.T) {
 	}
 	if len(forwarder.inputs) != 1 {
 		t.Fatalf("forwarder inputs count = %d, want 1", len(forwarder.inputs))
+	}
+}
+
+func TestInterruptedStreamWith200AutoRetries(t *testing.T) {
+	var mu sync.Mutex
+	var attempts []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Authorization")
+		mu.Lock()
+		attempts = append(attempts, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if key == "Bearer sk-one" {
+			// Returns 200 OK headers, but drops connection without any data chunks
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "gemini-model-a", dialect.NewSet(dialect.NewOpenAI()),
+		dialectGatewayGroup{id: 1, name: "stream-retry", upstreamURL: upstream.URL, apiKeys: []string{"sk-one", "sk-two"}},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gemini-model-a","stream":true,"messages":[]}`))
+	request.Header.Set("Authorization", "Bearer gl-client")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	mu.Lock()
+	defer mu.Unlock()
+	if response.Code != http.StatusOK || fmt.Sprint(attempts) != "[Bearer sk-one Bearer sk-two]" ||
+		!strings.Contains(response.Body.String(), "recovered") {
+		t.Fatalf("status=%d attempts=%v body=%s", response.Code, attempts, response.Body.String())
+	}
+}
+
+func TestMidStreamDropAutoRetriesWithNextCandidate(t *testing.T) {
+	var mu sync.Mutex
+	var attempts []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Authorization")
+		mu.Lock()
+		attempts = append(attempts, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if key == "Bearer sk-one" {
+			// Returns 200 OK and 2 chunks, but drops connection abruptly without terminal [DONE]
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"partial"}}]}`+"\n\n")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"test","object":"chat.completion.chunk","model":"gemini-model-a","choices":[{"index":0,"delta":{"content":"fully recovered"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	engine, _ := newDialectGatewayEngine(t, protocol.OpenAICompletions, "gemini-model-a", dialect.NewSet(dialect.NewOpenAI()),
+		dialectGatewayGroup{id: 1, name: "stream-retry", upstreamURL: upstream.URL, apiKeys: []string{"sk-one", "sk-two"}},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gemini-model-a","stream":true,"messages":[]}`))
+	request.Header.Set("Authorization", "Bearer gl-client")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	mu.Lock()
+	defer mu.Unlock()
+	if response.Code != http.StatusOK || fmt.Sprint(attempts) != "[Bearer sk-one Bearer sk-two]" ||
+		!strings.Contains(response.Body.String(), "fully recovered") {
+		t.Fatalf("status=%d attempts=%v body=%s", response.Code, attempts, response.Body.String())
 	}
 }

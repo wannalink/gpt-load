@@ -60,9 +60,28 @@ func forwardAttemptLimitForModel(snapshot *state.ConfigSnapshot, model string) i
 	return limit
 }
 
+func isRecoverableUncommittedError(result UpstreamResult) bool {
+	if result.Committed || result.ExecutionError == nil {
+		return false
+	}
+	switch result.ExecutionError.Kind {
+	case execution.ErrorKindTransport, execution.ErrorKindTimeout:
+		return true
+	case execution.ErrorKindProvider:
+		switch result.ExecutionError.Code {
+		case "upstream_protocol_error", "upstream_response_incomplete", "upstream_stream_terminated", "upstream_stream_idle_timeout":
+			return true
+		}
+	}
+	return false
+}
+
 func shouldRetrySyntheticProviderError(decision health.Decision, isSynthetic bool, result UpstreamResult) bool {
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
+	}
+	if isRecoverableUncommittedError(result) {
+		return true
 	}
 	return decision.Retry != health.RetryNone || isSynthetic
 }
@@ -71,12 +90,18 @@ func shouldRetrySyntheticResponse(decision health.Decision, isSynthetic bool, re
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
 	}
+	if isRecoverableUncommittedError(result) {
+		return true
+	}
 	return decision.Retry != health.RetryNone || (isSynthetic && result.StatusCode >= 400)
 }
 
 func shouldRetrySyntheticAttempt(decision health.Decision, isSynthetic bool, result UpstreamResult) bool {
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
+	}
+	if isRecoverableUncommittedError(result) {
+		return true
 	}
 	return decision.Retry != health.RetryNone || isSynthetic
 }

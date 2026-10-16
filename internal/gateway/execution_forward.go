@@ -247,8 +247,8 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		downstreamErr error
 		errorBody     []byte
 		streamUsage   *execution.UsageEvidence
-		bufferedData  [][]byte
 	)
+	streamBuf := newStreamBuffer(input.BufferStream)
 	preread := newEmptyResponsePreread(
 		input.EmptyResponseRetry && streamEvents.observeContent(input.Dialect),
 		nil,
@@ -358,11 +358,7 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 				errorBody = appendExecutionErrorBody(errorBody, forwardData)
 				return nil
 			}
-			if input.BufferStream {
-				bufferedData = append(bufferedData, append([]byte(nil), forwardData...))
-				if terminalInChunk {
-					streamEvents.markTerminalForwarded()
-				}
+			if streamBuf.push(forwardData, terminalInChunk, streamEvents.markTerminalForwarded) {
 				return nil
 			}
 			if !committed {
@@ -511,12 +507,9 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		// 不是空回：按关闭开关时的结果把压住的数据照常提交，开关只改变空回的处理。
 		commitHeld()
 	}
-	if input.BufferStream && downstreamErr == nil && terminal.Error == nil && ready != nil &&
-		ready.StatusCode >= http.StatusOK && ready.StatusCode < http.StatusMultipleChoices &&
-		!streamEvents.firstEventWasProviderError() {
+	if streamBuf.shouldReplay(downstreamErr, terminal, ready, streamEvents.firstEventWasProviderError()) {
 		committed = true
-		downstreamErr = replayBufferedStream(controller, ready, bufferedData, input.OnStreamReady)
-		bufferedData = nil
+		downstreamErr = streamBuf.replay(controller, ready, input.OnStreamReady)
 	}
 	capturedUsage := streamEvents.finalizeUsage()
 	result := upstreamFromExecutionStreamResult(ctx, input, terminal, streamUsage)

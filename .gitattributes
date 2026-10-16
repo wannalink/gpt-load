@@ -1,0 +1,2 @@
+# Ensure SSE test fixtures maintain LF line endings on all platforms
+*.sse text eol=lf

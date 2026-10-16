@@ -1384,7 +1384,7 @@ func (handler *Handler) executeAttempts(
 			EmptyResponseRetry: stream && emptyResponseRetryEnabled(
 				selection.Group, originalMetadata, prepared.request.Body,
 			),
-			BufferStream: handler.bufferStreams && (string(selection.Group.ChannelID) == "gemini" || strings.HasPrefix(strings.ToLower(externalModel), "gemini") || strings.HasPrefix(strings.ToLower(optionalModelValue(selection.UpstreamModelID)), "gemini")),
+			BufferStream: handler.bufferStreams && (isSynthetic || strings.HasPrefix(strings.ToLower(externalModel), "gemini") || strings.HasPrefix(strings.ToLower(optionalModelValue(selection.UpstreamModelID)), "gemini")),
 			Synthetic:    isSynthetic,
 			OnResponse:   handler.responseBindingObserver(recorder.accessKeyID, selection, ref, prepared.request, recorder.autoSelection()),
 			OnFirstResponse: func() {

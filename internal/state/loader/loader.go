@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"os"
 	"strings"
 
 	"gorm.io/gorm"
@@ -365,7 +364,7 @@ func BuildCompileInput(
 	if err != nil {
 		return state.CompileInput{}, err
 	}
-	input.SyntheticModels, err = mapSyntheticModels(rows.syntheticModels)
+	input.SyntheticModels, err = state.MapSyntheticModels(rows.syntheticModels)
 	if err != nil {
 		return state.CompileInput{}, err
 	}
@@ -394,7 +393,7 @@ func BuildCompileInputWithProxy(
 	if err != nil {
 		return state.CompileInput{}, err
 	}
-	input.SyntheticModels, err = mapSyntheticModels(rows.syntheticModels)
+	input.SyntheticModels, err = state.MapSyntheticModels(rows.syntheticModels)
 	if err != nil {
 		return state.CompileInput{}, err
 	}
@@ -535,7 +534,7 @@ func (l *Loader) read(
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
 	}
-	input.SyntheticModels, err = mapSyntheticModels(rows.syntheticModels)
+	input.SyntheticModels, err = state.MapSyntheticModels(rows.syntheticModels)
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
 	}
@@ -1091,67 +1090,4 @@ func stringValue(value *string) string {
 		return ""
 	}
 	return *value
-}
-
-func mapSyntheticModels(rows []models.SyntheticModel) ([]state.SyntheticModelConfig, error) {
-	configByName := make(map[string]state.SyntheticModelConfig, len(rows))
-	order := make([]string, 0, len(rows))
-	for _, row := range rows {
-		var targetModels []string
-		if len(row.TargetModels) > 0 {
-			if err := json.Unmarshal(row.TargetModels, &targetModels); err != nil {
-				return nil, fmt.Errorf("unmarshal synthetic model %d target models: %w", row.ID, err)
-			}
-		}
-		configByName[row.Name] = state.SyntheticModelConfig{
-			ID:           row.ID,
-			Name:         row.Name,
-			Description:  row.Description,
-			TargetModels: targetModels,
-			Enabled:      row.Enabled,
-		}
-		order = append(order, row.Name)
-	}
-	if envJSON := strings.TrimSpace(os.Getenv("SYNTHETIC_MODELS")); envJSON != "" {
-		type envSyntheticModel struct {
-			Name         string   `json:"name"`
-			Description  string   `json:"description"`
-			TargetModels []string `json:"target_models"`
-			Enabled      *bool    `json:"enabled"`
-		}
-		var envModels []envSyntheticModel
-		if err := json.Unmarshal([]byte(envJSON), &envModels); err == nil {
-			for _, em := range envModels {
-				if strings.TrimSpace(em.Name) == "" {
-					continue
-				}
-				enabled := true
-				if em.Enabled != nil {
-					enabled = *em.Enabled
-				}
-				cfg, exists := configByName[em.Name]
-				if exists {
-					cfg.TargetModels = em.TargetModels
-					if em.Description != "" {
-						cfg.Description = em.Description
-					}
-					cfg.Enabled = enabled
-					configByName[em.Name] = cfg
-				} else {
-					configByName[em.Name] = state.SyntheticModelConfig{
-						Name:         em.Name,
-						Description:  em.Description,
-						TargetModels: em.TargetModels,
-						Enabled:      enabled,
-					}
-					order = append(order, em.Name)
-				}
-			}
-		}
-	}
-	configs := make([]state.SyntheticModelConfig, 0, len(order))
-	for _, name := range order {
-		configs = append(configs, configByName[name])
-	}
-	return configs, nil
 }
