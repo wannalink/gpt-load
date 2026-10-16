@@ -764,12 +764,78 @@ async def systemone_classification_endpoint(
         logger.error(f"Inference error in /v1/systemone: {exc}")
         raise HTTPException(status_code=422, detail=str(exc))
 
-# --- GitHub Webhook Sync Endpoint ---
+# --- GitHub Synchronization & Webhook Endpoint ---
+GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "https://github.com/wannalink/gpt-load.git")
+
+def sync_github_to_hf_space() -> bool:
+    """Fetch latest commit from GitHub and mirror clean tree directly to Hugging Face Space repository."""
+    if not HF_TOKEN or not SPACE_ID:
+        logger.warning("GitHub auto-sync skipped: HF_TOKEN or SPACE_ID not configured.")
+        return False
+    try:
+        current_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+
+        logger.info(f"Checking for updates from GitHub ({GITHUB_REPO_URL})...")
+        subprocess.check_call(["git", "fetch", GITHUB_REPO_URL, "main"], timeout=60)
+        latest_gh_sha = subprocess.check_output(["git", "rev-parse", "FETCH_HEAD"], text=True).strip()
+
+        if latest_gh_sha == current_sha:
+            logger.info(f"Space is already up-to-date with GitHub ({current_sha[:8]}).")
+            return False
+
+        logger.info(f"New commit detected on GitHub: {latest_gh_sha[:8]} (Current: {current_sha[:8]}). Staging clean tree...")
+
+        import tempfile
+        tmp_index = tempfile.mktemp()
+        env = os.environ.copy()
+        env["GIT_INDEX_FILE"] = tmp_index
+
+        try:
+            subprocess.check_call(["git", "read-tree", "FETCH_HEAD"], env=env)
+            subprocess.call(
+                ["git", "rm", "-r", "--cached", "--ignore-unmatch", "screenshot", "web"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            tree_id = subprocess.check_output(["git", "write-tree"], env=env, text=True).strip()
+        finally:
+            if os.path.exists(tmp_index):
+                try:
+                    os.remove(tmp_index)
+                except Exception:
+                    pass
+
+        commit_msg = subprocess.check_output(["git", "log", "-1", "--format=%s", "FETCH_HEAD"], text=True).strip()
+        commit_id = subprocess.check_output(
+            ["git", "commit-tree", tree_id, "-m", f"Sync from GitHub: {commit_msg}"], text=True
+        ).strip()
+
+        auth_url = f"https://oauth:{HF_TOKEN}@huggingface.co/spaces/{SPACE_ID}.git"
+        logger.info(f"Pushing synchronized commit {commit_id[:8]} to Hugging Face Space {SPACE_ID}...")
+        subprocess.check_call(
+            ["git", "push", auth_url, f"{commit_id}:refs/heads/main", "--force", "--no-verify"],
+            timeout=60
+        )
+        logger.info(f"Successfully synchronized GitHub commit {latest_gh_sha[:8]} to Hugging Face Space.")
+        return True
+    except Exception as exc:
+        logger.error(f"Error syncing GitHub commit to Hugging Face Space: {exc}")
+        return False
+
+def background_github_sync_poller(interval_seconds: int = 600):
+    """Background daemon checking GitHub for updates every 10 minutes."""
+    while not SHUTDOWN_EVENT.is_set():
+        SHUTDOWN_EVENT.wait(interval_seconds)
+        if SHUTDOWN_EVENT.is_set():
+            break
+        sync_github_to_hf_space()
+
 @app.post("/github-sync")
 async def github_sync_webhook(request: Request, x_github_event: Optional[str] = Header(None)):
     """
     Receive GitHub push webhooks at https://<space>.hf.space/github-sync.
-    Automatically triggers a Space factory reboot to pull latest code and rebuild.
+    Fetches the new commit from GitHub and mirrors it directly to Hugging Face Space.
     """
     if x_github_event and x_github_event != "push":
         return {"status": "ignored", "event": x_github_event}
@@ -782,11 +848,11 @@ async def github_sync_webhook(request: Request, x_github_event: Optional[str] = 
     except Exception:
         pass
 
-    logger.info("GitHub push webhook received on main branch. Triggering Space synchronization and rebuild...")
-    rebooted = trigger_space_factory_restart()
+    logger.info("GitHub push webhook received on main branch. Triggering immediate repository sync...")
+    synced = await asyncio.to_thread(sync_github_to_hf_space)
     return {
-        "status": "sync_triggered" if rebooted else "failed",
-        "factory_reboot_triggered": rebooted,
+        "status": "synchronized" if synced else "already_up_to_date_or_failed",
+        "synced": synced,
     }
 
 # --- WebSocket Proxy (OpenAI Realtime Parity) ---
@@ -1031,6 +1097,10 @@ if __name__ == "__main__":
     # 5. Start background PyPI update poller for von-sdk
     update_thread = threading.Thread(target=background_update_poller, daemon=True)
     update_thread.start()
+
+    # 6. Start background GitHub repository sync daemon
+    github_thread = threading.Thread(target=background_github_sync_poller, daemon=True)
+    github_thread.start()
 
     # Initial check on PyPI for von-sdk
     check_pypi_for_updates()
