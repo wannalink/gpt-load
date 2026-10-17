@@ -54,7 +54,7 @@ PUBLIC_PORT = int(os.getenv("PORT", "7860"))
 INTERNAL_PORT = int(os.getenv("GPT_LOAD_INTERNAL_PORT", "3001"))
 GPT_LOAD_BIN = os.getenv("GPT_LOAD_BIN_PATH", "./gpt-load")
 
-SPACE_ID = os.getenv("SPACE_ID")
+SPACE_ID = os.getenv("SPACE_ID") or os.getenv("SPACE_REPO_NAME") or "wannalink/gpt-load"
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 VON_API_KEY = os.getenv("VON_API_KEY")
 
