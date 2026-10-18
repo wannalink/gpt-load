@@ -833,6 +833,12 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
             stderr=subprocess.DEVNULL,
         )
 
+        git_env = os.environ.copy()
+        git_env["GIT_AUTHOR_NAME"] = "GitHub Sync Bot"
+        git_env["GIT_AUTHOR_EMAIL"] = "sync@gpt-load.space"
+        git_env["GIT_COMMITTER_NAME"] = "GitHub Sync Bot"
+        git_env["GIT_COMMITTER_EMAIL"] = "sync@gpt-load.space"
+
         commit_msg = subprocess.check_output(
             ["git", "log", "-1", "--format=%s"], cwd=tmp_sync_dir, text=True
         ).strip()
@@ -842,6 +848,7 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
         commit_id = subprocess.check_output(
             ["git", "commit-tree", tree_id, "-m", f"Sync from GitHub: {commit_msg}"],
             cwd=tmp_sync_dir,
+            env=git_env,
             text=True,
         ).strip()
 
