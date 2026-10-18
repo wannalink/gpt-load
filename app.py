@@ -54,7 +54,40 @@ PUBLIC_PORT = int(os.getenv("PORT", "7860"))
 INTERNAL_PORT = int(os.getenv("GPT_LOAD_INTERNAL_PORT", "3001"))
 GPT_LOAD_BIN = os.getenv("GPT_LOAD_BIN_PATH", "./gpt-load")
 
-SPACE_ID = os.getenv("SPACE_ID") or os.getenv("SPACE_REPO_NAME") or "wannalink/gpt-load"
+def detect_space_id() -> Optional[str]:
+    """Dynamically determine Hugging Face Space ID without hardcoded fallbacks."""
+    for var in ("SPACE_ID", "SPACE_REPO_NAME", "HF_SPACE_ID"):
+        val = os.getenv(var)
+        if val:
+            return val
+    try:
+        url = subprocess.check_output(["git", "remote", "get-url", "origin"], text=True).strip()
+        import re
+        m = re.search(r"huggingface\.co/spaces/([^/]+/[^/.]+)", url)
+        if m:
+            clean = m.group(1)
+            if clean.endswith(".git"):
+                clean = clean[:-4]
+            return clean
+    except Exception:
+        pass
+    return None
+
+def detect_github_repo_url() -> str:
+    """Dynamically determine GitHub repository URL from environment or git remotes."""
+    val = os.getenv("GITHUB_REPO_URL")
+    if val:
+        return val
+    for remote in ("origin", "upstream", "github"):
+        try:
+            url = subprocess.check_output(["git", "remote", "get-url", remote], text=True).strip()
+            if "github.com" in url:
+                return url
+        except Exception:
+            continue
+    return ""
+
+SPACE_ID = detect_space_id()
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 VON_API_KEY = os.getenv("VON_API_KEY")
 
@@ -765,18 +798,23 @@ async def systemone_classification_endpoint(
         raise HTTPException(status_code=422, detail=str(exc))
 
 # --- GitHub Synchronization & Webhook Endpoint ---
-GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "https://github.com/wannalink/gpt-load.git")
-
-def sync_github_to_hf_space() -> bool:
+def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
     """Fetch latest commit from GitHub and mirror clean tree directly to Hugging Face Space repository."""
-    if not HF_TOKEN or not SPACE_ID:
+    space_id = detect_space_id()
+    if not HF_TOKEN or not space_id:
         logger.warning("GitHub auto-sync skipped: HF_TOKEN or SPACE_ID not configured.")
         return False
+
+    repo_url = target_url or detect_github_repo_url()
+    if not repo_url:
+        logger.warning("GitHub auto-sync skipped: GITHUB_REPO_URL could not be determined.")
+        return False
+
     try:
         current_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 
-        logger.info(f"Checking for updates from GitHub ({GITHUB_REPO_URL})...")
-        subprocess.check_call(["git", "fetch", GITHUB_REPO_URL, "main"], timeout=60)
+        logger.info(f"Checking for updates from GitHub ({repo_url})...")
+        subprocess.check_call(["git", "fetch", repo_url, "main"], timeout=60)
         latest_gh_sha = subprocess.check_output(["git", "rev-parse", "FETCH_HEAD"], text=True).strip()
 
         if latest_gh_sha == current_sha:
@@ -811,8 +849,8 @@ def sync_github_to_hf_space() -> bool:
             ["git", "commit-tree", tree_id, "-m", f"Sync from GitHub: {commit_msg}"], text=True
         ).strip()
 
-        auth_url = f"https://oauth:{HF_TOKEN}@huggingface.co/spaces/{SPACE_ID}.git"
-        logger.info(f"Pushing synchronized commit {commit_id[:8]} to Hugging Face Space {SPACE_ID}...")
+        auth_url = f"https://oauth:{HF_TOKEN}@huggingface.co/spaces/{space_id}.git"
+        logger.info(f"Pushing synchronized commit {commit_id[:8]} to Hugging Face Space {space_id}...")
         subprocess.check_call(
             ["git", "push", auth_url, f"{commit_id}:refs/heads/main", "--force", "--no-verify"],
             timeout=60
@@ -835,21 +873,24 @@ def background_github_sync_poller(interval_seconds: int = 600):
 async def github_sync_webhook(request: Request, x_github_event: Optional[str] = Header(None)):
     """
     Receive GitHub push webhooks at https://<space>.hf.space/github-sync.
-    Fetches the new commit from GitHub and mirrors it directly to Hugging Face Space.
+    Extracts clone URL from payload and mirrors the clean tree to Hugging Face Space.
     """
     if x_github_event and x_github_event != "push":
         return {"status": "ignored", "event": x_github_event}
 
+    target_clone_url = None
     try:
         body = await request.json()
         ref = body.get("ref", "")
         if ref and ref != "refs/heads/main":
             return {"status": "ignored", "ref": ref}
+        repo_data = body.get("repository", {})
+        target_clone_url = repo_data.get("clone_url") or repo_data.get("html_url")
     except Exception:
         pass
 
     logger.info("GitHub push webhook received on main branch. Triggering immediate repository sync...")
-    synced = await asyncio.to_thread(sync_github_to_hf_space)
+    synced = await asyncio.to_thread(sync_github_to_hf_space, target_clone_url)
     return {
         "status": "synchronized" if synced else "already_up_to_date_or_failed",
         "synced": synced,
