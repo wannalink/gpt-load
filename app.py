@@ -73,20 +73,6 @@ def detect_space_id() -> Optional[str]:
         pass
     return None
 
-def detect_github_repo_url() -> str:
-    """Dynamically determine GitHub repository URL from environment or git remotes."""
-    val = os.getenv("GITHUB_REPO_URL")
-    if val:
-        return val
-    for remote in ("origin", "upstream", "github"):
-        try:
-            url = subprocess.check_output(["git", "remote", "get-url", remote], text=True).strip()
-            if "github.com" in url:
-                return url
-        except Exception:
-            continue
-    return ""
-
 SPACE_ID = detect_space_id()
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 VON_API_KEY = os.getenv("VON_API_KEY")
@@ -799,6 +785,16 @@ async def systemone_classification_endpoint(
         raise HTTPException(status_code=422, detail=str(exc))
 
 # --- GitHub Synchronization & Webhook Endpoint ---
+def detect_github_repo_url() -> Optional[str]:
+    """Dynamically determine GitHub repository URL from environment or Space ID."""
+    val = os.getenv("GITHUB_REPO_URL")
+    if val:
+        return val
+    space_id = detect_space_id()
+    if space_id:
+        return f"https://github.com/{space_id}.git"
+    return None
+
 def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
     """Fetch latest commit from GitHub and mirror clean tree directly to Hugging Face Space repository."""
     space_id = detect_space_id()
@@ -811,56 +807,62 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
         logger.warning("GitHub auto-sync skipped: GITHUB_REPO_URL could not be determined.")
         return False
 
+    import tempfile
+    tmp_sync_dir = tempfile.mkdtemp(prefix="gh_sync_")
     try:
-        current_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        current_sha = os.getenv("COMMIT_SHA", "")
 
-        logger.info(f"Checking for updates from GitHub ({repo_url})...")
-        subprocess.check_call(["git", "fetch", repo_url, "main"], timeout=60)
-        latest_gh_sha = subprocess.check_output(["git", "rev-parse", "FETCH_HEAD"], text=True).strip()
+        logger.info(f"Cloning latest commit from GitHub ({repo_url})...")
+        subprocess.check_call(["git", "clone", "--depth=1", repo_url, tmp_sync_dir], timeout=60)
 
-        if latest_gh_sha == current_sha:
+        latest_gh_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_sync_dir, text=True
+        ).strip()
+
+        if current_sha and latest_gh_sha == current_sha:
             logger.info(f"Space is already up-to-date with GitHub ({current_sha[:8]}).")
             return False
 
-        logger.info(f"New commit detected on GitHub: {latest_gh_sha[:8]} (Current: {current_sha[:8]}). Staging clean tree...")
+        logger.info(f"New commit detected on GitHub: {latest_gh_sha[:8]} (Current: {current_sha[:8] if current_sha else 'initial'}). Staging clean tree...")
 
-        import tempfile
-        tmp_index = tempfile.mktemp()
-        env = os.environ.copy()
-        env["GIT_INDEX_FILE"] = tmp_index
+        # Strip repository screenshots/web binary assets to satisfy Hugging Face Hub limits
+        subprocess.call(
+            ["git", "rm", "-r", "--cached", "--ignore-unmatch", "screenshot", "web"],
+            cwd=tmp_sync_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
-        try:
-            subprocess.check_call(["git", "read-tree", "FETCH_HEAD"], env=env)
-            subprocess.call(
-                ["git", "rm", "-r", "--cached", "--ignore-unmatch", "screenshot", "web"],
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            tree_id = subprocess.check_output(["git", "write-tree"], env=env, text=True).strip()
-        finally:
-            if os.path.exists(tmp_index):
-                try:
-                    os.remove(tmp_index)
-                except Exception:
-                    pass
-
-        commit_msg = subprocess.check_output(["git", "log", "-1", "--format=%s", "FETCH_HEAD"], text=True).strip()
+        commit_msg = subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"], cwd=tmp_sync_dir, text=True
+        ).strip()
+        tree_id = subprocess.check_output(
+            ["git", "write-tree"], cwd=tmp_sync_dir, text=True
+        ).strip()
         commit_id = subprocess.check_output(
-            ["git", "commit-tree", tree_id, "-m", f"Sync from GitHub: {commit_msg}"], text=True
+            ["git", "commit-tree", tree_id, "-m", f"Sync from GitHub: {commit_msg}"],
+            cwd=tmp_sync_dir,
+            text=True,
         ).strip()
 
         auth_url = f"https://oauth:{HF_TOKEN}@huggingface.co/spaces/{space_id}.git"
         logger.info(f"Pushing synchronized commit {commit_id[:8]} to Hugging Face Space {space_id}...")
         subprocess.check_call(
             ["git", "push", auth_url, f"{commit_id}:refs/heads/main", "--force", "--no-verify"],
-            timeout=60
+            cwd=tmp_sync_dir,
+            timeout=60,
         )
         logger.info(f"Successfully synchronized GitHub commit {latest_gh_sha[:8]} to Hugging Face Space.")
         return True
     except Exception as exc:
         logger.error(f"Error syncing GitHub commit to Hugging Face Space: {exc}")
         return False
+    finally:
+        if os.path.exists(tmp_sync_dir):
+            try:
+                shutil.rmtree(tmp_sync_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 def background_github_sync_poller(interval_seconds: int = 600):
     """Background daemon checking GitHub for updates every 10 minutes."""
