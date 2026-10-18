@@ -809,8 +809,15 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
 
     import tempfile
     tmp_sync_dir = tempfile.mkdtemp(prefix="gh_sync_")
+    sha_file = os.path.join(HF_STORAGE_DIR, ".last_synced_github_sha")
     try:
-        current_sha = os.getenv("COMMIT_SHA", "")
+        last_synced_sha = ""
+        if os.path.exists(sha_file):
+            try:
+                with open(sha_file, "r", encoding="utf-8") as f:
+                    last_synced_sha = f.read().strip()
+            except Exception:
+                pass
 
         logger.info(f"Cloning latest commit from GitHub ({repo_url})...")
         subprocess.check_call(["git", "clone", "--depth=1", repo_url, tmp_sync_dir], timeout=60)
@@ -819,11 +826,14 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
             ["git", "rev-parse", "HEAD"], cwd=tmp_sync_dir, text=True
         ).strip()
 
-        if current_sha and latest_gh_sha == current_sha:
-            logger.info(f"Space is already up-to-date with GitHub ({current_sha[:8]}).")
+        if last_synced_sha and latest_gh_sha == last_synced_sha:
+            logger.info(f"GitHub repository is already synced at commit {latest_gh_sha[:8]}. Skipping.")
             return False
 
-        logger.info(f"New commit detected on GitHub: {latest_gh_sha[:8]} (Current: {current_sha[:8] if current_sha else 'initial'}). Staging clean tree...")
+        logger.info(
+            f"New commit detected on GitHub: {latest_gh_sha[:8]} "
+            f"(Previous synced: {last_synced_sha[:8] if last_synced_sha else 'none'}). Staging clean tree..."
+        )
 
         # Strip repository screenshots/web binary assets to satisfy Hugging Face Hub limits
         subprocess.call(
@@ -846,7 +856,7 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
             ["git", "write-tree"], cwd=tmp_sync_dir, text=True
         ).strip()
         commit_id = subprocess.check_output(
-            ["git", "commit-tree", tree_id, "-m", f"Sync from GitHub: {commit_msg}"],
+            ["git", "commit-tree", tree_id, "-m", f"Sync from GitHub: {commit_msg}\n\nGitHub-SHA: {latest_gh_sha}"],
             cwd=tmp_sync_dir,
             env=git_env,
             text=True,
@@ -859,6 +869,14 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
             cwd=tmp_sync_dir,
             timeout=60,
         )
+
+        # Update persistent SHA record to prevent repeat pushes
+        try:
+            with open(sha_file, "w", encoding="utf-8") as f:
+                f.write(latest_gh_sha)
+        except Exception as e:
+            logger.warning(f"Failed to record last synced SHA: {e}")
+
         logger.info(f"Successfully synchronized GitHub commit {latest_gh_sha[:8]} to Hugging Face Space.")
         return True
     except Exception as exc:
