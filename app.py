@@ -698,6 +698,7 @@ def health_and_status():
         "status": "online" if gpt_load_alive else "degraded",
         "service": "gpt-load-von-gateway",
         "zerogpu_enabled": HAS_ZEROGPU,
+        "env_keys": [k for k in os.environ.keys() if "KEY" not in k and "TOKEN" not in k],
         "von": {
             "version": CURRENT_VON_VERSION,
             "installed": HAS_VON,
