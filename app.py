@@ -807,33 +807,44 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
         logger.warning("GitHub auto-sync skipped: GITHUB_REPO_URL could not be determined.")
         return False
 
+    sha_file = os.path.join(HF_STORAGE_DIR, ".last_synced_github_sha")
+    last_synced_sha = ""
+    if os.path.exists(sha_file):
+        try:
+            with open(sha_file, "r", encoding="utf-8") as f:
+                last_synced_sha = f.read().strip()
+        except Exception:
+            pass
+
+    # Step 1: Query remote commit SHA via lightweight git ls-remote (100ms, zero disk/clone overhead)
+    latest_gh_sha = ""
+    try:
+        ls_out = subprocess.check_output(
+            ["git", "ls-remote", repo_url, "refs/heads/main"], text=True, timeout=15
+        ).strip()
+        if ls_out:
+            latest_gh_sha = ls_out.split()[0]
+    except Exception as e:
+        logger.warning(f"git ls-remote check failed for {repo_url}: {e}")
+
+    # If already up-to-date, exit immediately without cloning
+    if latest_gh_sha and last_synced_sha and latest_gh_sha == last_synced_sha:
+        return False
+
+    # Step 2: Only clone when a new commit is detected
     import tempfile
     tmp_sync_dir = tempfile.mkdtemp(prefix="gh_sync_")
-    sha_file = os.path.join(HF_STORAGE_DIR, ".last_synced_github_sha")
     try:
-        last_synced_sha = ""
-        if os.path.exists(sha_file):
-            try:
-                with open(sha_file, "r", encoding="utf-8") as f:
-                    last_synced_sha = f.read().strip()
-            except Exception:
-                pass
-
-        logger.info(f"Cloning latest commit from GitHub ({repo_url})...")
+        logger.info(
+            f"New commit detected on GitHub: {latest_gh_sha[:8] if latest_gh_sha else 'unknown'} "
+            f"(Previous: {last_synced_sha[:8] if last_synced_sha else 'none'}). Cloning update..."
+        )
         subprocess.check_call(["git", "clone", "--depth=1", repo_url, tmp_sync_dir], timeout=60)
 
-        latest_gh_sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=tmp_sync_dir, text=True
-        ).strip()
-
-        if last_synced_sha and latest_gh_sha == last_synced_sha:
-            logger.info(f"GitHub repository is already synced at commit {latest_gh_sha[:8]}. Skipping.")
-            return False
-
-        logger.info(
-            f"New commit detected on GitHub: {latest_gh_sha[:8]} "
-            f"(Previous synced: {last_synced_sha[:8] if last_synced_sha else 'none'}). Staging clean tree..."
-        )
+        if not latest_gh_sha:
+            latest_gh_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=tmp_sync_dir, text=True
+            ).strip()
 
         # Strip repository screenshots/web binary assets to satisfy Hugging Face Hub limits
         subprocess.call(
