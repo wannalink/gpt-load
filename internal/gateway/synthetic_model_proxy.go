@@ -30,19 +30,23 @@ func isExplicitTerminalRejection(result UpstreamResult) bool {
 			result.ExecutionError.Code,
 			result.ExecutionError.Summary,
 		}, " "))
-		if (strings.Contains(markers, "input_token_count") ||
-			strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
-			strings.Contains(markers, "token count exceeds")) &&
-			!strings.Contains(markers, "per minute") && !strings.Contains(markers, "tpm") {
+		// generate_content_free_tier_input_token_count is an explicit terminal rejection.
+		// Google's description contains "input tokens per minute limit exceeded on Free Tier",
+		// so it must not be bypassed by the "per minute" or "tpm" checks.
+		if strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
+			((strings.Contains(markers, "input_token_count") || strings.Contains(markers, "token count exceeds")) &&
+				!strings.Contains(markers, "per minute") && !strings.Contains(markers, "tpm")) {
 			return true
 		}
 	}
 	if len(result.Body) > 0 {
 		body := strings.ToLower(string(result.Body))
-		if (strings.Contains(body, "input_token_count") ||
-			strings.Contains(body, "generate_content_free_tier_input_token_count") ||
-			strings.Contains(body, "token count exceeds")) &&
-			!strings.Contains(body, "per minute") && !strings.Contains(body, "tpm") {
+		// generate_content_free_tier_input_token_count is an explicit terminal rejection.
+		// Google's description contains "input tokens per minute limit exceeded on Free Tier",
+		// so it must not be bypassed by the "per minute" or "tpm" checks.
+		if strings.Contains(body, "generate_content_free_tier_input_token_count") ||
+			((strings.Contains(body, "input_token_count") || strings.Contains(body, "token count exceeds")) &&
+				!strings.Contains(body, "per minute") && !strings.Contains(body, "tpm")) {
 			return true
 		}
 	}

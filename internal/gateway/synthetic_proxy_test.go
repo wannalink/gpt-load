@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -528,5 +529,85 @@ func TestSyntheticProxyInputTokenLimitFailsFastWithoutRetry(t *testing.T) {
 
 	if len(forwarder.inputs) != 1 {
 		t.Fatalf("attempts count = %d, want 1 (should fail fast for input token limit)", len(forwarder.inputs))
+	}
+}
+
+func TestSyntheticProxyRealWorldGeminiInputTokenLimitFailsFastWithoutRetry(t *testing.T) {
+	// Attempt 1 receives Google's real-world 429 response for free tier input token count:
+	// "description: Generate content input tokens per minute limit exceeded on Free Tier. Please retry in 26.821549292s."
+	// It must terminate immediately as client error without retrying other credentials or synthetic fallback tiers.
+	rawErrorMsg := `You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 250000, model: gemini-3.8-flash, description: Generate content input tokens per minute limit exceeded on Free Tier. See https://ai.google.dev/gemini-api/docs/rate-limits. Please retry in 26.821549292s.`
+	forwarder := &scriptedForwarder{results: []UpstreamResult{
+		withProviderErrorBeforeCommit(UpstreamResult{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(fmt.Sprintf(`{"error":{"message":%q,"code":429}}`, rawErrorMsg)),
+			ExecutionError: &execution.ErrorEvidence{
+				Kind:       execution.ErrorKindHTTP,
+				StatusCode: http.StatusTooManyRequests,
+				Summary:    rawErrorMsg,
+			},
+		}),
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"id":"should-not-reach"}`),
+		},
+	}}
+
+	handler, manager, registry := newHandlerForTest(t, forwarder)
+	if _, err := manager.Publish(state.CompileInput{
+		ChannelRegistry: channel.NewRegistry(),
+		Groups: []state.GroupConfig{
+			{
+				ConnectionType: "api_key", ID: 1, Name: "gemini-group", ChannelID: channel.OpenAI,
+				Params: json.RawMessage(`{}`),
+				Models: []state.ModelConfig{{ID: "gemini-flash-latest"}}, Enabled: true,
+			},
+			{
+				ConnectionType: "api_key", ID: 2, Name: "gemini-fallback-group", ChannelID: channel.OpenAI,
+				Params: json.RawMessage(`{}`),
+				Models: []state.ModelConfig{{ID: "gemini-3.8-flash"}}, Enabled: true,
+			},
+		},
+		Credentials: []state.CredentialConfig{
+			{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1"},
+			{ID: 2, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 2, Fingerprint: "cred-2"},
+		},
+		SyntheticModels: []state.SyntheticModelConfig{
+			{
+				ID:           1,
+				Name:         "gemini-auto",
+				TargetModels: []string{"gemini-flash-latest", "gemini-3.8-flash"},
+				Enabled:      true,
+			},
+		},
+		AccessKeys: []state.AccessKeyConfig{{
+			ID: 1, Name: "client", KeyHash: handler.encryption.Hash("gl-client"),
+			Status: state.AccessKeyStatusActive,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	enc1, _ := handler.encryption.Encrypt(`{"api_key":"sk-gemini-1"}`)
+	enc2, _ := handler.encryption.Encrypt(`{"api_key":"sk-gemini-2"}`)
+	_ = registry.ReplaceCredentials([]state.CredentialEntry{
+		{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1", EncryptedValue: enc1},
+		{ID: 2, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 2, Fingerprint: "cred-2", EncryptedValue: enc2},
+	})
+
+	engine := gin.New()
+	bindGatewayRoutesForTest(t, engine, handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"gemini-auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer gl-client")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	if len(forwarder.inputs) != 1 {
+		t.Fatalf("attempts count = %d, want 1 (should fail fast for real-world input token limit)", len(forwarder.inputs))
 	}
 }

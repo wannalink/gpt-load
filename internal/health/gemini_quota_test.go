@@ -104,6 +104,23 @@ func TestGeminiFreeTierQuotaDecision(t *testing.T) {
 			wantRuleID: RuleID("gemini.input_token_limit_exceeded"),
 		},
 		{
+			name: "gemini real world input token count error with description per minute returns client error and retry none",
+			attempt: ExecutionAttempt{
+				StatusCode: http.StatusTooManyRequests,
+				Now:        now,
+				Evidence: &execution.ErrorEvidence{
+					Kind:       execution.ErrorKindHTTP,
+					StatusCode: http.StatusTooManyRequests,
+					Summary:    "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 250000, model: gemini-3.8-flash, description: Generate content input tokens per minute limit exceeded on Free Tier. See https://ai.google.dev/gemini-api/docs/rate-limits. Please retry in 26.821549292s.",
+				},
+			},
+			wantMatch:  true,
+			wantScope:  execution.ErrorScopeRequest,
+			wantEffect: EffectNone,
+			wantRetry:  RetryNone,
+			wantRuleID: RuleID("gemini.input_token_limit_exceeded"),
+		},
+		{
 			name: "gemini input token per minute error is retryable and does not trigger immediate client error termination",
 			attempt: ExecutionAttempt{
 				StatusCode: http.StatusTooManyRequests,

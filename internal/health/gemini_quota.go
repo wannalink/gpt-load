@@ -114,10 +114,13 @@ func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 		attempt.Evidence.Summary,
 	}, " "))
 
-	if (strings.Contains(markers, "input_token_count") ||
-		strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
-		strings.Contains(markers, "token count exceeds")) &&
-		!strings.Contains(markers, "per minute") && !strings.Contains(markers, "tpm") {
+	// generate_content_free_tier_input_token_count is an explicit terminal rejection for the request
+	// (input token quota exhausted/exceeded). Google's error description explicitly includes
+	// the phrase "input tokens per minute limit exceeded on Free Tier", so it must not be
+	// bypassed by the "per minute" or "tpm" checks intended for generic TPM rate limits.
+	if strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
+		((strings.Contains(markers, "input_token_count") || strings.Contains(markers, "token count exceeds")) &&
+			!strings.Contains(markers, "per minute") && !strings.Contains(markers, "tpm")) {
 		return decision(
 			FailureCategoryClientError,
 			originForEvidence(attempt.Evidence),
