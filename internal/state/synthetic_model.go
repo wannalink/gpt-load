@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	"gpt-load/internal/storage/models"
 )
 
 type SyntheticModelConfig struct {
@@ -49,8 +47,16 @@ func compileSyntheticModels(snapshot *ConfigSnapshot, configs []SyntheticModelCo
 	return nil
 }
 
+type SyntheticModelRow struct {
+	ID           uint
+	Name         string
+	Description  string
+	TargetModels []byte
+	Enabled      bool
+}
+
 // MapSyntheticModels transforms synthetic model DB rows and SYNTHETIC_MODELS environment overrides into configs.
-func MapSyntheticModels(rows []models.SyntheticModel) ([]SyntheticModelConfig, error) {
+func MapSyntheticModels(rows []SyntheticModelRow) ([]SyntheticModelConfig, error) {
 	configByName := make(map[string]SyntheticModelConfig, len(rows))
 	order := make([]string, 0, len(rows))
 	for _, row := range rows {

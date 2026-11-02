@@ -364,7 +364,7 @@ func BuildCompileInput(
 	if err != nil {
 		return state.CompileInput{}, err
 	}
-	input.SyntheticModels, err = state.MapSyntheticModels(rows.syntheticModels)
+	input.SyntheticModels, err = state.MapSyntheticModels(mapSyntheticModelRows(rows.syntheticModels))
 	if err != nil {
 		return state.CompileInput{}, err
 	}
@@ -393,7 +393,7 @@ func BuildCompileInputWithProxy(
 	if err != nil {
 		return state.CompileInput{}, err
 	}
-	input.SyntheticModels, err = state.MapSyntheticModels(rows.syntheticModels)
+	input.SyntheticModels, err = state.MapSyntheticModels(mapSyntheticModelRows(rows.syntheticModels))
 	if err != nil {
 		return state.CompileInput{}, err
 	}
@@ -534,7 +534,7 @@ func (l *Loader) read(
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
 	}
-	input.SyntheticModels, err = state.MapSyntheticModels(rows.syntheticModels)
+	input.SyntheticModels, err = state.MapSyntheticModels(mapSyntheticModelRows(rows.syntheticModels))
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
 	}
@@ -551,6 +551,23 @@ func (l *Loader) read(
 		return state.CompileInput{}, nil, nil, err
 	}
 	return input, entries, states, nil
+}
+
+func mapSyntheticModelRows(rows []models.SyntheticModel) []state.SyntheticModelRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	result := make([]state.SyntheticModelRow, len(rows))
+	for i, r := range rows {
+		result[i] = state.SyntheticModelRow{
+			ID:           r.ID,
+			Name:         r.Name,
+			Description:  r.Description,
+			TargetModels: []byte(r.TargetModels),
+			Enabled:      r.Enabled,
+		}
+	}
+	return result
 }
 
 func selectChannelRegistry(registries []*channel.Registry) *channel.Registry {

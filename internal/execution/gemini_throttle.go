@@ -448,6 +448,11 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 		}
 	}
 
+	if result.DispatchState == DispatchNotSent {
+		release(0, false)
+		return result
+	}
+
 	hitExhaustion := isResourceExhausted(result.StatusCode, result.Body, result.Error)
 	statusCode := result.StatusCode
 	if statusCode == 0 && result.Error != nil && result.Error.StatusCode != 0 {
@@ -455,9 +460,6 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 	}
 	if hitExhaustion && statusCode == 0 {
 		statusCode = http.StatusTooManyRequests
-	} else if statusCode == 0 && result.DispatchState == DispatchNotSent {
-		release(0, false)
-		return result
 	}
 
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
@@ -533,6 +535,11 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 		}
 	}
 
+	if result.DispatchState == DispatchNotSent {
+		release(0, false)
+		return result
+	}
+
 	hitExhaustion := isResourceExhausted(result.StatusCode, nil, result.Error)
 	statusCode := result.StatusCode
 	if statusCode == 0 && result.Error != nil && result.Error.StatusCode != 0 {
@@ -540,9 +547,6 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 	}
 	if hitExhaustion && statusCode == 0 {
 		statusCode = http.StatusTooManyRequests
-	} else if statusCode == 0 && result.DispatchState == DispatchNotSent {
-		release(0, false)
-		return result
 	}
 
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {

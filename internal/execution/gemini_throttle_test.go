@@ -551,3 +551,49 @@ func TestGeminiModelHighDemandBoundedBackoff(t *testing.T) {
 		t.Fatalf("expected reset to 1m backoff, got %v", d6)
 	}
 }
+
+func TestGeminiDispatchNotSentDoesNotCountTowardsWindow(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	fake := &fakeExecutor{}
+	fake.unaryFunc = func(ctx context.Context, spec AttemptSpec) AttemptResult {
+		return AttemptResult{
+			DispatchState: DispatchNotSent,
+			Error: &ErrorEvidence{
+				Kind:       ErrorKindHTTP,
+				StatusCode: http.StatusTooManyRequests,
+				Summary:    "local preparation skipped due to cooldown",
+			},
+		}
+	}
+
+	executor := NewGeminiThrottledExecutor(fake)
+	spec := AttemptSpec{
+		ChannelID:     "gemini",
+		UpstreamModel: "gemini-3.8-flash",
+		Credential:    NewCredentialSnapshot(1, 1, 1, []byte("key-1")),
+	}
+
+	state := executor.registry.getState(spec)
+	state.nowFunc = func() time.Time { return currentTime }
+
+	// Simulate 25 local undispatched attempts
+	for i := 0; i < 25; i++ {
+		res := executor.Execute(context.Background(), spec)
+		if res.DispatchState != DispatchNotSent {
+			t.Fatalf("expected DispatchNotSent, got %v", res.DispatchState)
+		}
+	}
+
+	// Because none of the 25 attempts were dispatched upstream, requestCount must be 0 and throttled must be false.
+	state.mu.Lock()
+	count := state.requestCount
+	throttled := state.throttled
+	state.mu.Unlock()
+
+	if count != 0 {
+		t.Fatalf("expected requestCount 0 after undispatched attempts, got %d", count)
+	}
+	if throttled {
+		t.Fatalf("expected throttled false after undispatched attempts, got true")
+	}
+}

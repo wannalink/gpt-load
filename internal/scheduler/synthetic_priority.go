@@ -301,10 +301,15 @@ func (iterator *Iterator) EarliestCandidateAvailable(now time.Time) (time.Time, 
 		}
 	}
 
-	for i := range iterator.priorityTiers {
-		tier := &iterator.priorityTiers[i]
-		checkPool(&tier.regular)
-		checkPool(&tier.storeDowngraded)
+	if len(iterator.priorityTiers) > 0 {
+		for i := range iterator.priorityTiers {
+			tier := &iterator.priorityTiers[i]
+			checkPool(&tier.regular)
+			checkPool(&tier.storeDowngraded)
+		}
+	} else {
+		checkPool(&iterator.regular)
+		checkPool(&iterator.storeDowngraded)
 	}
 
 	if !hasCandidates {
