@@ -188,8 +188,9 @@ type ExecuteStreamResponse struct {
 }
 
 type ExecuteStreamChunk struct {
-	Payload []byte
-	Err     error
+	Payload    []byte
+	Incomplete bool
+	Err        error
 }
 
 // BeginCodexBrowserAuthorization creates one browser OAuth challenge without
@@ -540,7 +541,7 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 		defer close(chunks)
 		for chunk := range response.Chunks {
 			select {
-			case chunks <- ExecuteStreamChunk{Payload: append([]byte(nil), chunk.Payload...), Err: chunk.Err}:
+			case chunks <- ExecuteStreamChunk{Payload: append([]byte(nil), chunk.Payload...), Incomplete: chunk.Incomplete, Err: chunk.Err}:
 			case <-ctx.Done():
 				return
 			}
@@ -697,6 +698,15 @@ func ObserveCodexAccount(ctx context.Context, credential CodexCredential, baseUR
 		baseURL = defaultCodexAPIBase
 	}
 	return requestCodexJSON(ctx, credential, http.MethodGet, strings.TrimRight(baseURL, "/")+"/wham/usage", nil, "usage", codexOptionsHTTPClient(options))
+}
+
+// ObserveCodexSubscription 查询当前账号的订阅周期，不执行续费或其他写操作。
+func ObserveCodexSubscription(ctx context.Context, credential CodexCredential, baseURL string, options ...Options) (AccountObservation, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultCodexAPIBase
+	}
+	target := strings.TrimRight(baseURL, "/") + "/subscriptions?account_id=" + url.QueryEscape(credential.AccountID)
+	return requestCodexJSON(ctx, credential, http.MethodGet, target, nil, "subscription", codexOptionsHTTPClient(options))
 }
 
 // ObserveCodexResetCredits fetches the reset-credit detail endpoint without
