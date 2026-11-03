@@ -68,6 +68,9 @@ func isRecoverableUncommittedError(result UpstreamResult) bool {
 	if result.Committed || result.ExecutionError == nil {
 		return false
 	}
+	if result.RequestWritten && result.ExecutionError.ReplaySafety != execution.ReplaySafetyRejectedBeforeProcessing {
+		return false
+	}
 	switch result.ExecutionError.Kind {
 	case execution.ErrorKindTransport, execution.ErrorKindTimeout:
 		return true
