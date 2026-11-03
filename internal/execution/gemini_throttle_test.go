@@ -597,3 +597,52 @@ func TestGeminiDispatchNotSentDoesNotCountTowardsWindow(t *testing.T) {
 		t.Fatalf("expected throttled false after undispatched attempts, got true")
 	}
 }
+
+func TestGeminiSyntheticRouteFailsOverFastWhenModelPaused(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	var callCount int
+
+	fake := &fakeExecutor{}
+	fake.unaryFunc = func(ctx context.Context, spec AttemptSpec) AttemptResult {
+		callCount++
+		return AttemptResult{
+			DispatchState: DispatchMaybeSent,
+			StatusCode:    http.StatusServiceUnavailable,
+			Body:          []byte(`{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."}}`),
+		}
+	}
+
+	executor := NewGeminiThrottledExecutor(fake)
+	spec := AttemptSpec{
+		ChannelID:     "gemini",
+		UpstreamModel: "gemini-flash-latest",
+		Synthetic:     true,
+		Credential:    NewCredentialSnapshot(1, 1, 1, []byte("key-1")),
+	}
+
+	state := executor.registry.getState(spec)
+	state.nowFunc = func() time.Time { return currentTime }
+
+	// 1st synthetic attempt hits 503 -> records 1 min high demand pause
+	res1 := executor.Execute(context.Background(), spec)
+	if res1.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", res1.StatusCode)
+	}
+	if callCount != 1 {
+		t.Fatalf("callCount = %d, want 1", callCount)
+	}
+
+	// 2nd synthetic attempt 5 seconds later while model is paused:
+	// must fail fast with DispatchNotSent and 503 WITHOUT invoking the fake executor again.
+	currentTime = currentTime.Add(5 * time.Second)
+	res2 := executor.Execute(context.Background(), spec)
+	if res2.DispatchState != DispatchNotSent {
+		t.Fatalf("expected DispatchNotSent on paused synthetic route, got %v", res2.DispatchState)
+	}
+	if res2.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 on paused synthetic route, got %d", res2.StatusCode)
+	}
+	if callCount != 1 {
+		t.Fatalf("callCount = %d, want 1 (should fail fast without upstream HTTP call)", callCount)
+	}
+}

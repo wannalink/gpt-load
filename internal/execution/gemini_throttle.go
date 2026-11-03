@@ -289,6 +289,19 @@ func (r *GeminiThrottleRegistry) getModelPauseState(model string) *geminiModelPa
 	return state
 }
 
+func (r *GeminiThrottleRegistry) isModelPaused(model string, now time.Time) (time.Time, bool) {
+	if model == "" {
+		return time.Time{}, false
+	}
+	pauseState := r.getModelPauseState(model)
+	pauseState.mu.Lock()
+	defer pauseState.mu.Unlock()
+	if pauseState.pausedUntil.After(now) {
+		return pauseState.pausedUntil, true
+	}
+	return time.Time{}, false
+}
+
 func (r *GeminiThrottleRegistry) checkModelPause(
 	ctx context.Context,
 	model string,
@@ -404,7 +417,23 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 	state := e.registry.getState(spec)
 	model := geminiTargetModel(spec)
 
-	if !spec.Synthetic {
+	if spec.Synthetic {
+		if until, paused := e.registry.isModelPaused(model, state.now()); paused {
+			log.Printf("[gemini-throttle] model %q is in high demand pause (until %v): failing over synthetic route immediately", model, until.Format(time.RFC3339))
+			return AttemptResult{
+				DispatchState: DispatchNotSent,
+				StatusCode:    http.StatusServiceUnavailable,
+				Error: &ErrorEvidence{
+					Kind:         ErrorKindHTTP,
+					StatusCode:   http.StatusServiceUnavailable,
+					OriginHint:   ErrorOriginUpstream,
+					ScopeHint:    ErrorScopeModel,
+					Summary:      "model " + model + " is currently experiencing high demand until " + until.Format(time.RFC3339),
+					ReplaySafety: ReplaySafetyRejectedBeforeProcessing,
+				},
+			}
+		}
+	} else {
 		if err := e.registry.checkModelPause(ctx, model, state.sleep, state.now); err != nil {
 			return AttemptResult{
 				DispatchState: DispatchNotSent,
@@ -491,7 +520,23 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 	state := e.registry.getState(spec)
 	model := geminiTargetModel(spec)
 
-	if !spec.Synthetic {
+	if spec.Synthetic {
+		if until, paused := e.registry.isModelPaused(model, state.now()); paused {
+			log.Printf("[gemini-throttle] model %q is in high demand pause (until %v): failing over synthetic route immediately", model, until.Format(time.RFC3339))
+			return StreamResult{
+				DispatchState: DispatchNotSent,
+				StatusCode:    http.StatusServiceUnavailable,
+				Error: &ErrorEvidence{
+					Kind:         ErrorKindHTTP,
+					StatusCode:   http.StatusServiceUnavailable,
+					OriginHint:   ErrorOriginUpstream,
+					ScopeHint:    ErrorScopeModel,
+					Summary:      "model " + model + " is currently experiencing high demand until " + until.Format(time.RFC3339),
+					ReplaySafety: ReplaySafetyRejectedBeforeProcessing,
+				},
+			}
+		}
+	} else {
 		if err := e.registry.checkModelPause(ctx, model, state.sleep, state.now); err != nil {
 			return StreamResult{
 				DispatchState: DispatchNotSent,
