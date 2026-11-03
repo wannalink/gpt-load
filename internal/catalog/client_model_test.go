@@ -10,8 +10,8 @@ import (
 )
 
 func TestCodexModelCatalogSnapshotDigest(t *testing.T) {
-	if digest := fmt.Sprintf("%x", sha256.Sum256(codexClientModelsJSON)); digest != codexModelCatalogSHA256 {
-		t.Fatalf("Codex model catalog digest = %q, want %q", digest, codexModelCatalogSHA256)
+	if digest := fmt.Sprintf("%x", sha256.Sum256(codexClientModelsJSON)); digest != "3daa693c554ad0f76456359f3358cbcde7b73e2ac8fd49bc8e3b67d160acff8f" {
+		t.Fatalf("Codex model catalog digest = %q, want %q", digest, "3daa693c554ad0f76456359f3358cbcde7b73e2ac8fd49bc8e3b67d160acff8f")
 	}
 }
 
@@ -27,7 +27,7 @@ func TestCodexClientModelUsesGPT61SolTemplate(t *testing.T) {
 	}
 	if model["minimal_client_version"] != "0.153.0" || model["tool_mode"] != "code_mode_only" ||
 		model["multi_agent_version"] != "v2" || model["use_responses_lite"] != true ||
-		model["supports_reasoning_effort_updates"] != true || model["default_reasoning_level"] != "low" ||
+		model["supports_reasoning_effort_updates"] != true || model["default_reasoning_level"] != "high" ||
 		model["context_window"] != json.Number("272000") || model["max_context_window"] != json.Number("872000") {
 		t.Fatal("GPT-6.1 Sol did not retain its native capabilities")
 	}
@@ -39,7 +39,7 @@ func TestCodexClientModelUsesGPT61TerraTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model["context_window"] != json.Number("500000") || model["default_reasoning_level"] != "low" ||
+	if model["context_window"] != json.Number("500000") || model["default_reasoning_level"] != "high" ||
 		model["supports_reasoning_effort_updates"] != true ||
 		!reflect.DeepEqual(automatic.SupportedReasoningLevels, []string{"low", "medium", "high", "xhigh", "max", "ultra"}) {
 		t.Fatalf("GPT-6.1 Terra did not retain its native capabilities: context=%v, updates=%v, profile=%#v",
@@ -228,8 +228,8 @@ func TestCodexClientModelReasoningDefaultStaysWithinSelectedLevels(t *testing.T)
 		custom *string
 		want   string
 	}{
-		{"preset retained", []string{"low", "high"}, nil, "low"},
-		{"medium fallback", []string{"high", "medium"}, nil, "medium"},
+		{"preset retained", []string{"low", "high"}, nil, "high"},
+		{"medium fallback", []string{"high", "medium"}, nil, "high"},
 		{"first fallback", []string{"high", "xhigh"}, nil, "high"},
 		{"manual default", []string{"low", "high"}, ptr("high"), "high"},
 	} {

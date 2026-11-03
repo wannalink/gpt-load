@@ -150,6 +150,9 @@ func clientModelProfileFromTemplate(model map[string]any) (ClientModelProfile, e
 		return ClientModelProfile{}, fmt.Errorf("service_tiers: %w", err)
 	}
 	defaultReasoningLevel, _ := model["default_reasoning_level"].(string)
+	if defaultReasoningLevel == "low" || defaultReasoningLevel == "" {
+		defaultReasoningLevel = "high"
+	}
 	return ClientModelProfile{
 		DisplayName:              displayName,
 		Description:              description,
