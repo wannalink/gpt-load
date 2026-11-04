@@ -1,0 +1,1 @@
+function e(e){if(!e)return e;let t=e.lastIndexOf(`@`);if(t>0){let n=Array.from(e.slice(0,t));return`${n.length>1?n[0]:``}***${n.length>3?n.at(-1):``}${e.slice(t)}`}let n=Array.from(e);return n.length>4?`${n[0]}***${n.at(-1)}`:`***`}function t(t,n,r){return t?.trim()||(r===`subscription`?e(n):n)}export{e as n,t};

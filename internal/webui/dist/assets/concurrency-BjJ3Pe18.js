@@ -1,0 +1,1 @@
+import{Q as e}from"./client-context-DTI9ti9c.js";function t(t){if(!t||typeof t!=`object`)throw new e;let n=t;for(let t of[`current`,`limit`])if(typeof n[t]!=`number`||!Number.isSafeInteger(n[t])||n[t]<0)throw new e;return{current:n.current,limit:n.limit}}export{t};

@@ -1,0 +1,1 @@
+import{ft as e}from"./client-context-DTI9ti9c.js";var t=e({name:`chevron-up`,size:24,node:[[`path`,{d:`m18 15-6-6-6 6`,key:`153udz`}]]});export{t};

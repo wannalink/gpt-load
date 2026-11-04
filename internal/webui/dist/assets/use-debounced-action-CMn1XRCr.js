@@ -1,0 +1,1 @@
+import{Qt as e}from"./Primitive-C6PCCOwj.js";function t(t){let n;function r(){n!==void 0&&clearTimeout(n),n=void 0}function i(e){r(),n=setTimeout(()=>{n=void 0,e()},t)}return e(r),{schedule:i,cancel:r}}export{t};

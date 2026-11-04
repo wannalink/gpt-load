@@ -1,0 +1,1 @@
+function e(e){return{value:e.id,label:e.name,keywords:e.keywords??[]}}export{e as t};

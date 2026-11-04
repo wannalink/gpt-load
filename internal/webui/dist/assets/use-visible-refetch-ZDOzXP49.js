@@ -1,0 +1,1 @@
+import{Et as e,Ot as t}from"./Primitive-C6PCCOwj.js";function n(n){let r=document.hidden;function i(){let e=document.hidden;r&&!e&&Promise.allSettled(n.map(e=>Promise.resolve().then(()=>e()))),r=e}t(()=>document.addEventListener(`visibilitychange`,i)),e(()=>{document.removeEventListener(`visibilitychange`,i)})}export{n as t};

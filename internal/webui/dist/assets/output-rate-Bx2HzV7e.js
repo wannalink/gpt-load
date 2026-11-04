@@ -1,0 +1,1 @@
+function e(e){let t=Number(e.output_tokens);return e.status_code<200||e.status_code>=300||![`openai-completions`,`openai-responses`,`anthropic`,`gemini`].includes(e.protocol)||e.usage_state!==`complete`&&e.usage_state!==`partial`||!Number.isSafeInteger(t)||t<=0?null:Number.isSafeInteger(e.duration_ms)&&e.duration_ms>0?t/(e.duration_ms/1e3):null}export{e as t};

@@ -1,0 +1,1 @@
+import{Qt as e}from"./Primitive-C6PCCOwj.js";function t(){let t=new Set;function n(){let e=new AbortController;return t.add(e),e}function r(e){t.delete(e)}function i(){for(let e of t)e.abort();t.clear()}return e(i),{create:n,release:r,abortAll:i}}export{t};

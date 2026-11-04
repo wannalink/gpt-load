@@ -1,0 +1,1 @@
+import{ht as e}from"./Primitive-C6PCCOwj.js";function t(){let t=e()?.vnode?.scopeId;return t?{[t]:``}:{}}export{t};

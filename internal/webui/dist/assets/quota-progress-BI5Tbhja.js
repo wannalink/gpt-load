@@ -1,0 +1,1 @@
+function e(e,t=!1){return t||e<30?`danger`:e<70?`warning`:`success`}export{e as t};

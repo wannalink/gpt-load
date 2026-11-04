@@ -1,0 +1,1 @@
+import{Qt as e,it as t,tn as n}from"./Primitive-C6PCCOwj.js";function r(r){let i=n(!1),a;function o(){a!==void 0&&clearTimeout(a),a=void 0,i.value=!1}function s(){o(),i.value=!0,a=setTimeout(()=>{a=void 0,i.value=!1},r)}return e(o),{value:t(()=>i.value),show:s,clear:o}}export{r as t};
