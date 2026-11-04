@@ -35,6 +35,8 @@ from typing import Any, Dict, Optional, Union
 for _mod in ("httpx", "httpcore", "uvicorn", "uvicorn.access", "uvicorn.error"):
     logging.getLogger(_mod).setLevel(logging.WARNING)
 
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("gateway_space")
 
@@ -846,9 +848,9 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
                 ["git", "rev-parse", "HEAD"], cwd=tmp_sync_dir, text=True
             ).strip()
 
-        # Strip repository screenshots/web binary assets to satisfy Hugging Face Hub limits
+        # Strip repository screenshots to satisfy Hugging Face Hub limits
         subprocess.call(
-            ["git", "rm", "-r", "--cached", "--ignore-unmatch", "screenshot", "web"],
+            ["git", "rm", "-r", "--cached", "--ignore-unmatch", "screenshot"],
             cwd=tmp_sync_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1073,6 +1075,11 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
     "host",
 }
+
+@app.get("/")
+@app.get("")
+async def root_proxy_handler(request: Request):
+    return await reverse_proxy_handler(request, "")
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def reverse_proxy_handler(request: Request, path: str):
