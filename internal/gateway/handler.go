@@ -83,6 +83,7 @@ type runtimeCredentialRegistry interface {
 	scheduler.CredentialSource
 	CaptureActiveCredentialRefs(groupIDs []uint) []state.CredentialRef
 	CredentialRef(credentialID uint) (state.CredentialRef, bool)
+	GroupRuntimeViews(groupID uint) []state.CredentialRuntimeView
 	ActiveEncryptedCredentialDataIfMatch(ref state.CredentialRef) (string, bool)
 	SetCooldownWithChange(credentialID uint, until time.Time) (exists bool, changed bool)
 	SetCooldownWithChangeIfVersion(credentialID uint, expectedVersion uint64, until time.Time) (matched bool, changed bool)
@@ -709,6 +710,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		AdvisorModels:            metadata.AdvisorModels,
 		AccessKey:                accessKey,
 	}
+	logRoutingTable(handler.logger, snapshot, handler.registry, model, query, handler.now())
 	candidateGroupIDs := scheduler.CandidateGroupIDsForQuery(snapshot, query)
 	capturedRefs := handler.registry.CaptureActiveCredentialRefs(candidateGroupIDs)
 	allowedCredentialRefs := make(map[uint]state.CredentialRef, len(capturedRefs))

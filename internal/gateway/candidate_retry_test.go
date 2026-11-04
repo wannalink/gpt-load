@@ -210,6 +210,61 @@ func TestCandidateCooldownCanceledByContext(t *testing.T) {
 	}
 }
 
+func TestHandlerSilentlyCyclesThroughCooldownModelsUntilClientCancels(t *testing.T) {
+	forwarder := &scriptedForwarder{results: []UpstreamResult{}}
+	handler, manager, registry := newHandlerForTest(t, forwarder)
+	if _, err := manager.Publish(state.CompileInput{
+		ChannelRegistry: channel.NewRegistry(),
+		Groups: []state.GroupConfig{
+			{
+				ConnectionType: "api_key", ID: 1, Name: "cooldowned-group", ChannelID: channel.OpenAI,
+				Params: json.RawMessage(`{}`),
+				Models: []state.ModelConfig{{ID: "gpt-4o"}}, Enabled: true,
+			},
+		},
+		Credentials: []state.CredentialConfig{
+			{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1"},
+		},
+		AccessKeys: []state.AccessKeyConfig{{
+			ID: 1, Name: "client", KeyHash: handler.encryption.Hash("gl-client"),
+			Status: state.AccessKeyStatusActive,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	enc1, _ := handler.encryption.Encrypt(`{"api_key":"sk-cooldown"}`)
+	_ = registry.ReplaceCredentials([]state.CredentialEntry{
+		{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1", EncryptedValue: enc1},
+	})
+
+	// Put credential on cooldown for 10 minutes
+	ref, _ := registry.CredentialRef(1)
+	registry.SetModelCooldown(ref, "gpt-4o", time.Now().Add(10*time.Minute), time.Now())
+
+	engine := gin.New()
+	bindGatewayRoutesForTest(t, engine, handler)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer gl-client")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	start := time.Now()
+	engine.ServeHTTP(recorder, req)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("cancellation during silent cooldown cycling took too long: %v", elapsed)
+	}
+	if len(forwarder.inputs) != 0 {
+		t.Fatalf("forwarder attempts = %d, want 0", len(forwarder.inputs))
+	}
+}
+
 func TestAutoModelCandidateCooldownAutoRetriesAndSucceeds(t *testing.T) {
 	forwarder := &scriptedForwarder{results: []UpstreamResult{
 		{

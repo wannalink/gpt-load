@@ -1964,6 +1964,8 @@ func (panicRuntimeRegistry) SetModelCooldown(state.CredentialRef, string, time.T
 
 func (panicRuntimeRegistry) SetGroupModelCooldown(uint, string, time.Time, time.Time) {}
 
+func (panicRuntimeRegistry) GroupRuntimeViews(uint) []state.CredentialRuntimeView { return nil }
+
 func (panicRuntimeRegistry) SchedulingState() *state.SchedulingState {
 	panic("unexpected registry access")
 }

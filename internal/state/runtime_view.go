@@ -95,3 +95,21 @@ func (r *CredentialRegistry) Snapshot() []CredentialRuntimeView {
 	sortRuntimeViews(views)
 	return views
 }
+
+func (r *CredentialRegistry) GroupRuntimeViews(groupID uint) []CredentialRuntimeView {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	bucket, ok := r.buckets[groupID]
+	if !ok || len(bucket) == 0 {
+		return nil
+	}
+	views := make([]CredentialRuntimeView, 0, len(bucket))
+	for _, entry := range bucket {
+		views = append(views, runtimeView(entry))
+	}
+	sortRuntimeViews(views)
+	return views
+}
