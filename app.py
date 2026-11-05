@@ -478,7 +478,7 @@ def get_current_commit_sha() -> str:
     return ""
 
 def resolve_gpt_load_binary() -> Optional[str]:
-    """Find or automatically build gpt-load binary in container."""
+    """Find or automatically build gpt-load binary in container. Force rebuild v2.0.2."""
     local_exec = "/tmp/gpt-load-exec"
 
     # 1. First check if executable already exists locally
