@@ -438,6 +438,15 @@ def ensure_web_ui_built():
     except Exception as exc:
         logger.error(f"Failed to compile Web UI assets: {exc}")
 
+def get_current_commit_sha() -> str:
+    try:
+        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
 def resolve_gpt_load_binary() -> Optional[str]:
     """Find or automatically build gpt-load binary in container."""
     local_exec = "/tmp/gpt-load-exec"
@@ -450,12 +459,28 @@ def resolve_gpt_load_binary() -> Optional[str]:
             pass
         return local_exec
 
-    # 2. Check persistent storage bucket
+    # 2. Check persistent storage bucket only if commit SHA matches
+    sha_file = os.path.join(HF_STORAGE_DIR, ".commit_sha")
+    current_sha = get_current_commit_sha()
+    stored_sha = ""
+    if os.path.exists(sha_file):
+        try:
+            with open(sha_file, "r") as f:
+                stored_sha = f.read().strip()
+        except Exception:
+            pass
+
     bucket_bin = os.path.join(HF_STORAGE_DIR, "gpt-load")
-    if os.path.exists(bucket_bin) and os.path.isfile(bucket_bin) and os.path.getsize(bucket_bin) > 0:
+    if (
+        os.path.exists(bucket_bin)
+        and os.path.isfile(bucket_bin)
+        and os.path.getsize(bucket_bin) > 0
+        and current_sha != ""
+        and stored_sha == current_sha
+    ):
         logger.info(
-            f"Found precompiled gpt-load binary in persistent bucket ({bucket_bin}, "
-            f"{os.path.getsize(bucket_bin) / (1024*1024):.1f} MB). Staging executable to {local_exec}..."
+            f"Found precompiled gpt-load binary in persistent bucket matching commit {current_sha[:7]} "
+            f"({os.path.getsize(bucket_bin) / (1024*1024):.1f} MB). Staging executable to {local_exec}..."
         )
         try:
             shutil.copyfile(bucket_bin, local_exec)
@@ -463,6 +488,8 @@ def resolve_gpt_load_binary() -> Optional[str]:
             return local_exec
         except Exception as e:
             logger.warning(f"Error copying gpt-load binary from persistent bucket: {e}")
+    elif os.path.exists(bucket_bin):
+        logger.info("Persistent bucket binary commit SHA mismatch or absent. Forcing fresh compilation...")
 
     # 3. Check current workspace directory
     candidates = [
@@ -500,7 +527,10 @@ def resolve_gpt_load_binary() -> Optional[str]:
                 if os.path.exists(HF_STORAGE_DIR):
                     try:
                         shutil.copyfile(local_exec, bucket_bin)
-                        logger.info("Saved compiled binary to persistent bucket for instant subsequent boots.")
+                        if current_sha:
+                            with open(sha_file, "w") as f:
+                                f.write(current_sha)
+                        logger.info(f"Saved compiled binary (commit {current_sha[:7]}) to persistent bucket.")
                     except Exception as e:
                         logger.warning(f"Notice saving binary to persistent bucket: {e}")
                 return local_exec
