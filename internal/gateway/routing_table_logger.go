@@ -58,7 +58,7 @@ func logRoutingTable(
 	// 2. Gather key & cooldown stats for each target model
 	statsList := make([]modelCandidateStats, 0, len(targetModels))
 	for _, m := range targetModels {
-		statsList = append(statsList, computeModelStats(snapshot, registry, m, now))
+		statsList = append(statsList, computeModelStats(snapshot, registry, m, requestedModel, query, now))
 	}
 
 	// 3. Format and log the table
@@ -69,19 +69,36 @@ func computeModelStats(
 	snapshot *state.ConfigSnapshot,
 	registry runtimeCredentialRegistry,
 	model string,
+	requestedModel string,
+	query scheduler.Query,
 	now time.Time,
 ) modelCandidateStats {
 	stats := modelCandidateStats{
 		modelName: model,
 	}
 
-	// Find all groups supporting this model
-	groupIDs := make(map[uint]struct{})
-	for _, ops := range snapshot.ExecutionCandidates {
-		for _, models := range ops {
-			if routes, ok := models[model]; ok {
-				for _, route := range routes {
-					groupIDs[route.GroupID] = struct{}{}
+	// Resolve actual real model targets if 'model' is itself a synthetic or auto model alias
+	realModels := resolveRealModels(snapshot, model)
+
+	// Find all group IDs and associated upstream model IDs supporting these real models
+	matchedGroups := make(map[uint]string) // groupID -> upstreamModelID
+
+	for _, realModel := range realModels {
+		for clientProtocol, ops := range snapshot.ExecutionCandidates {
+			if query.ClientProtocol != "" && clientProtocol != query.ClientProtocol {
+				continue
+			}
+			for op, models := range ops {
+				if query.Operation != "" && op != query.Operation {
+					continue
+				}
+				for key, routes := range models {
+					isMatch := key == realModel || key == state.NoModelRouteKey
+					for _, route := range routes {
+						if isMatch || route.UpstreamModelID == realModel {
+							matchedGroups[route.GroupID] = route.UpstreamModelID
+						}
+					}
 				}
 			}
 		}
@@ -90,19 +107,23 @@ func computeModelStats(
 	var minCooldownUntil time.Time
 	var hasMinCooldown bool
 
-	for groupID := range groupIDs {
+	for groupID, upstreamModelID := range matchedGroups {
 		views := registry.GroupRuntimeViews(groupID)
 		for _, view := range views {
 			stats.totalKeys++
 
-			// Check credential-level or model-level cooldown
 			var cooldownUntil time.Time
 			if view.CooldownUntil.After(now) {
 				cooldownUntil = view.CooldownUntil
 			}
 			if view.ModelCooldowns != nil {
-				if mUntil, ok := view.ModelCooldowns[model]; ok && mUntil.After(cooldownUntil) {
-					cooldownUntil = mUntil
+				// Check for cooldown under realModel, upstreamModelID, or requestedModel
+				for _, k := range []string{model, realModels[0], upstreamModelID, requestedModel} {
+					if k != "" {
+						if mUntil, ok := view.ModelCooldowns[k]; ok && mUntil.After(cooldownUntil) {
+							cooldownUntil = mUntil
+						}
+					}
 				}
 			}
 
@@ -126,19 +147,48 @@ func computeModelStats(
 	return stats
 }
 
+func resolveRealModels(snapshot *state.ConfigSnapshot, model string) []string {
+	visited := make(map[string]bool)
+	var resolve func(m string) []string
+	resolve = func(m string) []string {
+		if visited[m] {
+			return nil
+		}
+		visited[m] = true
+
+		if targets, ok := snapshot.SyntheticModels[m]; ok && len(targets) > 0 {
+			var realTargets []string
+			for _, t := range targets {
+				realTargets = append(realTargets, resolve(t)...)
+			}
+			if len(realTargets) > 0 {
+				return realTargets
+			}
+		}
+		if snapshot.AutoModels != nil {
+			if autoEntry, ok := snapshot.AutoModels.Lookup(m); ok {
+				var realTargets []string
+				for _, preset := range autoEntry.Presets {
+					if preset.Model != "" {
+						realTargets = append(realTargets, resolve(preset.Model)...)
+					}
+				}
+				if len(realTargets) > 0 {
+					return realTargets
+				}
+			}
+		}
+		return []string{m}
+	}
+	return resolve(model)
+}
+
 func formatAndLogRoutingTable(
 	logger *logrus.Logger,
 	requestedModel string,
 	modelType string,
 	statsList []modelCandidateStats,
 ) {
-	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("\n================================ ROUTING CANDIDATES TABLE ================================\n"))
-	builder.WriteString(fmt.Sprintf("Requested Model: %s | Type: %s\n", requestedModel, modelType))
-	builder.WriteString(fmt.Sprintf("----------------------------------------------------------------------------------------\n"))
-	builder.WriteString(fmt.Sprintf("%-25s | %-22s | %-12s | %-20s\n", "TARGET MODEL", "AVAILABLE / TOTAL KEYS", "STATUS", "TIME UNTIL AVAIL"))
-	builder.WriteString(fmt.Sprintf("----------------------------------------------------------------------------------------\n"))
-
 	summaryLines := make([]string, 0, len(statsList))
 	for _, s := range statsList {
 		statusStr := "AVAILABLE"
@@ -151,12 +201,14 @@ func formatAndLogRoutingTable(
 			timeStr = "N/A"
 		}
 
-		keysStr := fmt.Sprintf("%d / %d keys", s.availableKeys, s.totalKeys)
-		builder.WriteString(fmt.Sprintf("%-25s | %-22s | %-12s | %-20s\n", s.modelName, keysStr, statusStr, timeStr))
-
-		summaryLines = append(summaryLines, fmt.Sprintf("%s(%d/%d, %s, %s)", s.modelName, s.availableKeys, s.totalKeys, statusStr, timeStr))
+		summaryLines = append(
+			summaryLines,
+			fmt.Sprintf("%s(%d/%d, %s, %s)", s.modelName, s.availableKeys, s.totalKeys, statusStr, timeStr),
+		)
 	}
-	builder.WriteString(fmt.Sprintf("================================================================------------------------"))
+
+	targetsSummary := strings.Join(summaryLines, " | ")
+	msg := fmt.Sprintf("Routing candidates for %s (%s): %s", requestedModel, modelType, targetsSummary)
 
 	utils.LogPlaneBestEffort(
 		logger,
@@ -166,8 +218,8 @@ func formatAndLogRoutingTable(
 			"event":           "routing_table",
 			"requested_model": requestedModel,
 			"model_type":      modelType,
-			"targets_summary": strings.Join(summaryLines, " | "),
+			"targets_summary": targetsSummary,
 		},
-		builder.String(),
+		msg,
 	)
 }
