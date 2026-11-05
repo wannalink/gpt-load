@@ -432,11 +432,19 @@ def ensure_web_ui_built():
 
     logger.info("Compiling Vue 3 / Vite Web UI assets in web/...")
     try:
+        subprocess.check_call([npm_bin, "install", "-g", "pnpm"], timeout=60)
         subprocess.check_call([npm_bin, "install", "--no-audit", "--no-fund"], cwd=web_dir, timeout=120)
-        subprocess.check_call([npm_bin, "run", "build"], cwd=web_dir, timeout=120)
+        pnpm_bin = shutil.which("pnpm") or "pnpm"
+        subprocess.check_call([pnpm_bin, "run", "build"], cwd=web_dir, timeout=180)
         logger.info("Web UI compiled successfully into internal/webui/dist.")
     except Exception as exc:
         logger.error(f"Failed to compile Web UI assets: {exc}")
+        dist_dir = os.path.dirname(os.path.join("internal", "webui", "dist", "index.html"))
+        os.makedirs(dist_dir, exist_ok=True)
+        dist_index = os.path.join(dist_dir, "index.html")
+        if not os.path.exists(dist_index) or os.path.getsize(dist_index) == 0:
+            with open(dist_index, "w", encoding="utf-8") as f:
+                f.write('<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>GPT-Load</title></head><body><h1>GPT-Load</h1><p>Web UI fallback</p></body></html>')
 
 def get_current_commit_sha() -> str:
     try:
