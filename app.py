@@ -421,6 +421,28 @@ def ensure_web_ui_built():
     if os.path.exists(dist_index) and os.path.getsize(dist_index) > 0:
         return
 
+    # Automatically generate tiny 1x1 webp placeholder assets if missing so vite build succeeds
+    import base64
+    tiny_webp_bytes = base64.b64decode('UklGRiQAAABXRUJQVlA4TAgAAAAwAQCdASoBAAEAAQwA/sAANAA=')
+    webp_paths = [
+        "web/src/frontends/modern/assets/brand/login-mascot-body.webp",
+        "web/src/frontends/modern/assets/brand/login-mascot-eye.webp",
+        "web/src/frontends/modern/assets/brand/login-mascot-tail.webp",
+        "web/src/frontends/classic/assets/channels/cpa.webp",
+        "web/src/frontends/classic/assets/channels/jev.webp",
+        "web/src/frontends/modern/assets/channels/cpa.webp",
+        "web/src/frontends/modern/assets/channels/jev.webp"
+    ]
+    for wp in webp_paths:
+        full_wp = os.path.abspath(wp)
+        if not os.path.exists(full_wp):
+            try:
+                os.makedirs(os.path.dirname(full_wp), exist_ok=True)
+                with open(full_wp, "wb") as wf:
+                    wf.write(tiny_webp_bytes)
+            except Exception:
+                pass
+
     web_dir = os.path.abspath("web")
     if not os.path.exists(web_dir) or not os.path.exists(os.path.join(web_dir, "package.json")):
         return
