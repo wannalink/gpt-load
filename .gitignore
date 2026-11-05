@@ -61,9 +61,7 @@ node_modules/
 .pnpm-store/
 
 !internal/webui/dist/
-internal/webui/dist/*
-!internal/webui/dist/assets/
-internal/webui/dist/assets/*
-!internal/webui/dist/assets/embed-placeholder.txt
+!internal/webui/dist/**
+internal/webui/dist/**/*.webp
 /.kilo
 .kilo/*

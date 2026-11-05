@@ -878,6 +878,14 @@ def sync_github_to_hf_space(target_url: Optional[str] = None) -> bool:
                 ["git", "rev-parse", "HEAD"], cwd=tmp_sync_dir, text=True
             ).strip()
 
+        # Ensure prebuilt webui dist assets are present in sync repo before writing tree
+        dist_dir_sync = os.path.join(tmp_sync_dir, "internal", "webui", "dist")
+        local_dist_dir = os.path.abspath(os.path.join("internal", "webui", "dist"))
+        if os.path.exists(local_dist_dir):
+            os.makedirs(dist_dir_sync, exist_ok=True)
+            shutil.copytree(local_dist_dir, dist_dir_sync, dirs_exist_ok=True)
+            subprocess.run(["git", "add", "-f", "internal/webui/dist"], cwd=tmp_sync_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
         # Strip repository screenshots to satisfy Hugging Face Hub limits
         subprocess.call(
             ["git", "rm", "-r", "--cached", "--ignore-unmatch", "screenshot"],
