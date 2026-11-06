@@ -1473,7 +1473,7 @@ func (handler *Handler) executeAttempts(
 			)
 			if stream && result.Stream.EndReason == StreamEndCleanEOF {
 				handler.recordCredentialSuccess(ref, attemptNow)
-				health.ResetGeminiBackoff(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
+				health.ReduceGeminiBackoffOnSuccess(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
 				if originalMetadata.PreviousResponseID == "" {
 					handler.recordAffinitySuccess(requestAffinity, selection, ref)
 				}
@@ -1502,7 +1502,7 @@ func (handler *Handler) executeAttempts(
 			result.StatusCode >= http.StatusOK &&
 			result.StatusCode < http.StatusMultipleChoices {
 			handler.recordCredentialSuccess(ref, attemptNow)
-			health.ResetGeminiBackoff(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
+			health.ReduceGeminiBackoffOnSuccess(selection.GroupID, optionalModelValue(selection.UpstreamModelID))
 		}
 		recordedAttempt := recorder.recordAttempt(
 			selection, normalizedCredential.secrets, result, decision, attemptStarted, attemptCompleted,

@@ -17,9 +17,12 @@ const GeminiFreeTierQuotaErrorSubstring = "quota exceeded for metric: generative
 // GeminiHighDemandErrorSubstring is the error message indicating high model demand.
 const GeminiHighDemandErrorSubstring = "this model is currently experiencing high demand. spikes in demand are usually temporary. please try again later."
 
-// GeminiHighDemandMaxBackoff is the maximum backoff duration for Gemini 503 high demand errors.
-// It is capped at 4 minutes to stay below the 5-minute request timeout / cancellation safeguard.
-const GeminiHighDemandMaxBackoff = 4 * time.Minute
+var geminiBackoffSteps = []time.Duration{
+	30 * time.Second,
+	60 * time.Second,
+	120 * time.Second,
+	290 * time.Second,
+}
 
 type geminiBackoffKey struct {
 	groupID uint
@@ -27,8 +30,8 @@ type geminiBackoffKey struct {
 }
 
 type geminiBackoffState struct {
-	currentDelay time.Duration
-	lastFailure  time.Time
+	step        int
+	lastFailure time.Time
 }
 
 var (
@@ -38,7 +41,7 @@ var (
 
 func getNextGeminiBackoff(groupID uint, model string, now time.Time) time.Duration {
 	if groupID == 0 || model == "" {
-		return 1 * time.Minute
+		return geminiBackoffSteps[0]
 	}
 	key := geminiBackoffKey{groupID: groupID, model: model}
 
@@ -48,11 +51,11 @@ func getNextGeminiBackoff(groupID uint, model string, now time.Time) time.Durati
 	state, ok := geminiBackoffs[key]
 	if !ok {
 		state = &geminiBackoffState{
-			currentDelay: 1 * time.Minute,
-			lastFailure:  now,
+			step:        0,
+			lastFailure: now,
 		}
 		geminiBackoffs[key] = state
-		return state.currentDelay
+		return geminiBackoffSteps[0]
 	}
 
 	// Simple pruning of very old records when map grows large
@@ -64,18 +67,14 @@ func getNextGeminiBackoff(groupID uint, model string, now time.Time) time.Durati
 		}
 	}
 
-	// If a long time has passed since the last failure, reset backoff
-	if now.Sub(state.lastFailure) > state.currentDelay*2+GeminiHighDemandMaxBackoff {
-		state.currentDelay = 1 * time.Minute
-	} else {
-		// Double the delay
-		state.currentDelay *= 2
-		if state.currentDelay > GeminiHighDemandMaxBackoff {
-			state.currentDelay = GeminiHighDemandMaxBackoff
-		}
+	// If a long time has passed since the last failure, reset backoff step
+	if now.Sub(state.lastFailure) > 10*time.Minute {
+		state.step = 0
+	} else if state.step < len(geminiBackoffSteps)-1 {
+		state.step++
 	}
 	state.lastFailure = now
-	return state.currentDelay
+	return geminiBackoffSteps[state.step]
 }
 
 // parseGeminiRetryDuration parses duration from Gemini's rate limit error message
@@ -199,6 +198,29 @@ func geminiHighDemandDecision(attempt ExecutionAttempt, context DecisionContext)
 	res.CooldownUntil = attempt.Now.Add(delay)
 
 	return res, true
+}
+
+// ReduceGeminiBackoffOnSuccess reduces the high demand backoff for a group-model pair by 2 steps on successful response.
+func ReduceGeminiBackoffOnSuccess(groupID uint, model string) {
+	if model != "" {
+		execution.ReduceGeminiModelPauseOnSuccess(model)
+	}
+	if groupID == 0 || model == "" {
+		return
+	}
+	key := geminiBackoffKey{groupID: groupID, model: model}
+
+	geminiBackoffMu.Lock()
+	defer geminiBackoffMu.Unlock()
+
+	state, ok := geminiBackoffs[key]
+	if !ok {
+		return
+	}
+	state.step -= 2
+	if state.step < 0 {
+		delete(geminiBackoffs, key)
+	}
 }
 
 // ResetGeminiBackoff instantly resets the high demand exponential backoff timer for a group-model pair.

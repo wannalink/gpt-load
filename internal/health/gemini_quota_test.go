@@ -253,7 +253,7 @@ func TestGeminiHighDemandDecision(t *testing.T) {
 		Model:        "gemini-1.5-flash",
 	}
 
-	// 1st hit -> 1m delay
+	// 1st hit -> 30s delay (step 0)
 	d1, matched := geminiHighDemandDecision(attempt, context)
 	if !matched {
 		t.Fatalf("first attempt should match")
@@ -264,66 +264,48 @@ func TestGeminiHighDemandDecision(t *testing.T) {
 	if d1.RuleID != "gemini.high_demand_model_cooldown" {
 		t.Errorf("RuleID mismatch: %v", d1.RuleID)
 	}
-	expected1 := now.Add(1 * time.Minute)
+	expected1 := now.Add(30 * time.Second)
 	if !d1.CooldownUntil.Equal(expected1) {
 		t.Errorf("CooldownUntil = %v, want %v", d1.CooldownUntil, expected1)
 	}
 
-	// 2nd hit (soon after) -> 2m delay
+	// 2nd hit (soon after) -> 60s delay (step 1)
 	attempt2 := attempt
 	attempt2.Now = now.Add(time.Second)
 	d2, _ := geminiHighDemandDecision(attempt2, context)
-	expected2 := attempt2.Now.Add(2 * time.Minute)
+	expected2 := attempt2.Now.Add(60 * time.Second)
 	if !d2.CooldownUntil.Equal(expected2) {
-		t.Errorf("CooldownUntil = %v, want %v (doubled)", d2.CooldownUntil, expected2)
+		t.Errorf("CooldownUntil = %v, want %v", d2.CooldownUntil, expected2)
 	}
 
-	// 3rd hit (soon after) -> 4m delay
+	// 3rd hit (soon after) -> 120s delay (step 2)
 	attempt3 := attempt
 	attempt3.Now = attempt2.Now.Add(time.Second)
 	d3, _ := geminiHighDemandDecision(attempt3, context)
-	expected3 := attempt3.Now.Add(4 * time.Minute)
+	expected3 := attempt3.Now.Add(120 * time.Second)
 	if !d3.CooldownUntil.Equal(expected3) {
-		t.Errorf("CooldownUntil = %v, want %v (doubled)", d3.CooldownUntil, expected3)
+		t.Errorf("CooldownUntil = %v, want %v", d3.CooldownUntil, expected3)
 	}
 
-	// 4th hit (soon after) -> capped at 4m (must never exceed 5m safeguard)
+	// 4th hit (soon after) -> 290s delay (step 3, max backoff)
 	attempt3b := attempt
 	attempt3b.Now = attempt3.Now.Add(time.Second)
 	d3b, _ := geminiHighDemandDecision(attempt3b, context)
-	expected3b := attempt3b.Now.Add(4 * time.Minute)
+	expected3b := attempt3b.Now.Add(290 * time.Second)
 	if !d3b.CooldownUntil.Equal(expected3b) {
-		t.Errorf("CooldownUntil = %v, want %v (capped at 4m)", d3b.CooldownUntil, expected3b)
+		t.Errorf("CooldownUntil = %v, want %v (max backoff 290s)", d3b.CooldownUntil, expected3b)
 	}
 
-	// Reset decay test -> 5th hit after a long delay (e.g. 1 hour) -> should reset back to 1m
+	// Successful request triggers ReduceGeminiBackoffOnSuccess (reduces step 3 -> step 1: 60s)
+	ReduceGeminiBackoffOnSuccess(context.GroupID, context.Model)
+
+	// Next hit should be step 2 (120s) after stepping up from step 1
 	attempt4 := attempt
-	attempt4.Now = attempt3b.Now.Add(time.Hour)
+	attempt4.Now = attempt3b.Now.Add(time.Second)
 	d4, _ := geminiHighDemandDecision(attempt4, context)
-	expected4 := attempt4.Now.Add(1 * time.Minute)
+	expected4 := attempt4.Now.Add(120 * time.Second)
 	if !d4.CooldownUntil.Equal(expected4) {
-		t.Errorf("CooldownUntil = %v, want %v (reset to 1m)", d4.CooldownUntil, expected4)
-	}
-
-	// 5th hit soon after -> should double delay to 2m
-	attempt5 := attempt
-	attempt5.Now = attempt4.Now.Add(time.Second)
-	d5, _ := geminiHighDemandDecision(attempt5, context)
-	expected5 := attempt5.Now.Add(2 * time.Minute)
-	if !d5.CooldownUntil.Equal(expected5) {
-		t.Errorf("CooldownUntil = %v, want %v (doubled)", d5.CooldownUntil, expected5)
-	}
-
-	// Successful request triggers ResetGeminiBackoff
-	ResetGeminiBackoff(context.GroupID, context.Model)
-
-	// 6th hit soon after -> should reset back to 1m!
-	attempt6 := attempt
-	attempt6.Now = attempt5.Now.Add(time.Second)
-	d6, _ := geminiHighDemandDecision(attempt6, context)
-	expected6 := attempt6.Now.Add(1 * time.Minute)
-	if !d6.CooldownUntil.Equal(expected6) {
-		t.Errorf("CooldownUntil = %v, want %v (reset by ResetGeminiBackoff)", d6.CooldownUntil, expected6)
+		t.Errorf("CooldownUntil = %v, want %v (reduced 2 steps on success then stepped up)", d4.CooldownUntil, expected4)
 	}
 }
 
@@ -365,7 +347,7 @@ func TestJudgeExecutionGeminiHighDemand(t *testing.T) {
 	if decision.RuleID != "gemini.high_demand_model_cooldown" {
 		t.Errorf("RuleID = %v, want gemini.high_demand_model_cooldown", decision.RuleID)
 	}
-	expected := now.Add(1 * time.Minute)
+	expected := now.Add(30 * time.Second)
 	if !decision.CooldownUntil.Equal(expected) {
 		t.Errorf("CooldownUntil = %v, want %v", decision.CooldownUntil, expected)
 	}

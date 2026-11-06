@@ -445,8 +445,8 @@ func TestGeminiModelHighDemandPauseAndRetry(t *testing.T) {
 	if !sleepCalled.Load() {
 		t.Fatalf("expected pause sleep before retry")
 	}
-	if time.Duration(sleptDuration.Load()) < 1*time.Minute {
-		t.Fatalf("expected at least 1 minute pause, got %v", time.Duration(sleptDuration.Load()))
+	if time.Duration(sleptDuration.Load()) < 30*time.Second {
+		t.Fatalf("expected at least 30s pause, got %v", time.Duration(sleptDuration.Load()))
 	}
 }
 
@@ -512,43 +512,37 @@ func TestGeminiModelHighDemandBoundedBackoff(t *testing.T) {
 	baseTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	model := "gemini-3.8-flash"
 
-	// 1st failure -> 1m
+	// 1st failure -> 30s
 	d1 := registry.recordModelHighDemand(model, baseTime)
-	if d1 != 1*time.Minute {
-		t.Fatalf("expected 1m backoff, got %v", d1)
+	if d1 != 30*time.Second {
+		t.Fatalf("expected 30s backoff, got %v", d1)
 	}
 
-	// 2nd failure -> 2m
+	// 2nd failure -> 60s
 	d2 := registry.recordModelHighDemand(model, baseTime.Add(time.Second))
-	if d2 != 2*time.Minute {
-		t.Fatalf("expected 2m backoff, got %v", d2)
+	if d2 != 60*time.Second {
+		t.Fatalf("expected 60s backoff, got %v", d2)
 	}
 
-	// 3rd failure -> 4m
+	// 3rd failure -> 120s
 	d3 := registry.recordModelHighDemand(model, baseTime.Add(2*time.Second))
-	if d3 != 4*time.Minute {
-		t.Fatalf("expected 4m backoff, got %v", d3)
+	if d3 != 120*time.Second {
+		t.Fatalf("expected 120s backoff, got %v", d3)
 	}
 
-	// 4th failure -> capped at 4m (must never exceed 5m safeguard)
+	// 4th failure -> 290s (max backoff)
 	d4 := registry.recordModelHighDemand(model, baseTime.Add(3*time.Second))
-	if d4 != 4*time.Minute {
-		t.Fatalf("expected capped 4m backoff, got %v", d4)
+	if d4 != 290*time.Second {
+		t.Fatalf("expected max 290s backoff, got %v", d4)
 	}
 
-	// 5th failure -> still capped at 4m
+	// Reduce on success -> step 3 (290s) reduced by 2 steps to step 1 (60s)
+	registry.reduceModelHighDemandOnSuccess(model)
+
+	// Next failure after success -> step 2 (120s)
 	d5 := registry.recordModelHighDemand(model, baseTime.Add(4*time.Second))
-	if d5 != 4*time.Minute {
-		t.Fatalf("expected capped 4m backoff, got %v", d5)
-	}
-
-	// Reset on success
-	registry.resetModelHighDemand(model)
-
-	// Next failure after reset -> back to 1m
-	d6 := registry.recordModelHighDemand(model, baseTime.Add(5*time.Second))
-	if d6 != 1*time.Minute {
-		t.Fatalf("expected reset to 1m backoff, got %v", d6)
+	if d5 != 120*time.Second {
+		t.Fatalf("expected 120s backoff after 2-step reduction on success, got %v", d5)
 	}
 }
 

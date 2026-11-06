@@ -650,7 +650,7 @@ func (s *websocketConnection) executeTurn(turn websocketTurn) {
 		}
 		if result.Stream.EndReason == StreamEndCleanEOF {
 			h.recordCredentialSuccess(ref, h.now())
-			health.ResetGeminiBackoff(selection.GroupID, input.UpstreamModelID)
+			health.ReduceGeminiBackoffOnSuccess(selection.GroupID, input.UpstreamModelID)
 			if requiredRef == nil {
 				h.recordAffinitySuccess(affinity, selection, ref)
 			}

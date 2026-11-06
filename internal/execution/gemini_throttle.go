@@ -248,14 +248,28 @@ type GeminiThrottleRegistry struct {
 	modelPauses map[string]*geminiModelPauseState
 }
 
+var geminiModelPauseSteps = []time.Duration{
+	30 * time.Second,
+	60 * time.Second,
+	120 * time.Second,
+	290 * time.Second,
+}
+
 type geminiModelPauseState struct {
-	mu           sync.Mutex
-	currentDelay time.Duration
-	lastFailure  time.Time
-	pausedUntil  time.Time
+	mu          sync.Mutex
+	step        int
+	lastFailure time.Time
+	pausedUntil time.Time
 }
 
 var activeGeminiThrottleRegistry atomic.Pointer[GeminiThrottleRegistry]
+
+// ReduceGeminiModelPauseOnSuccess reduces any high demand pause for the specified model by 2 steps on success.
+func ReduceGeminiModelPauseOnSuccess(model string) {
+	if r := activeGeminiThrottleRegistry.Load(); r != nil {
+		r.reduceModelHighDemandOnSuccess(model)
+	}
+}
 
 // ResetGeminiModelPause resets any high demand pause for the specified model in the active registry.
 func ResetGeminiModelPause(model string) {
@@ -333,23 +347,38 @@ func (r *GeminiThrottleRegistry) checkModelPause(
 
 func (r *GeminiThrottleRegistry) recordModelHighDemand(model string, now time.Time) time.Duration {
 	if model == "" {
-		return 1 * time.Minute
+		return geminiModelPauseSteps[0]
 	}
 	pauseState := r.getModelPauseState(model)
 	pauseState.mu.Lock()
 	defer pauseState.mu.Unlock()
 
-	if pauseState.currentDelay == 0 || now.Sub(pauseState.lastFailure) > pauseState.currentDelay*2+GeminiHighDemandMaxBackoff {
-		pauseState.currentDelay = 1 * time.Minute
-	} else {
-		pauseState.currentDelay *= 2
-		if pauseState.currentDelay > GeminiHighDemandMaxBackoff {
-			pauseState.currentDelay = GeminiHighDemandMaxBackoff
-		}
+	if now.Sub(pauseState.lastFailure) > 10*time.Minute {
+		pauseState.step = 0
+	} else if pauseState.step < len(geminiModelPauseSteps)-1 {
+		pauseState.step++
 	}
+
+	delay := geminiModelPauseSteps[pauseState.step]
 	pauseState.lastFailure = now
-	pauseState.pausedUntil = now.Add(pauseState.currentDelay)
-	return pauseState.currentDelay
+	pauseState.pausedUntil = now.Add(delay)
+	return delay
+}
+
+func (r *GeminiThrottleRegistry) reduceModelHighDemandOnSuccess(model string) {
+	if model == "" {
+		return
+	}
+	pauseState := r.getModelPauseState(model)
+	pauseState.mu.Lock()
+	defer pauseState.mu.Unlock()
+
+	pauseState.step -= 2
+	if pauseState.step < 0 {
+		pauseState.step = 0
+		pauseState.lastFailure = time.Time{}
+		pauseState.pausedUntil = time.Time{}
+	}
 }
 
 func (r *GeminiThrottleRegistry) resetModelHighDemand(model string) {
@@ -360,7 +389,7 @@ func (r *GeminiThrottleRegistry) resetModelHighDemand(model string) {
 	pauseState.mu.Lock()
 	defer pauseState.mu.Unlock()
 
-	pauseState.currentDelay = 0
+	pauseState.step = 0
 	pauseState.lastFailure = time.Time{}
 	pauseState.pausedUntil = time.Time{}
 }
@@ -492,7 +521,7 @@ func (e *GeminiThrottledExecutor) Execute(ctx context.Context, spec AttemptSpec)
 	}
 
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
-		e.registry.resetModelHighDemand(model)
+		e.registry.reduceModelHighDemandOnSuccess(model)
 	}
 
 	release(statusCode, hitExhaustion)
@@ -595,7 +624,7 @@ func (e *GeminiThrottledExecutor) ExecuteStream(ctx context.Context, spec Attemp
 	}
 
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
-		e.registry.resetModelHighDemand(model)
+		e.registry.reduceModelHighDemandOnSuccess(model)
 	}
 
 	release(statusCode, hitExhaustion)
