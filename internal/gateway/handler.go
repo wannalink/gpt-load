@@ -710,7 +710,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		AdvisorModels:            metadata.AdvisorModels,
 		AccessKey:                accessKey,
 	}
-	logRoutingTable(handler.logger, snapshot, handler.registry, model, query, handler.now())
+	logRoutingTable(handler.logger, snapshot, handler.registry, optionalModelValue(metadata.Model), query, handler.now())
 	candidateGroupIDs := scheduler.CandidateGroupIDsForQuery(snapshot, query)
 	capturedRefs := handler.registry.CaptureActiveCredentialRefs(candidateGroupIDs)
 	allowedCredentialRefs := make(map[uint]state.CredentialRef, len(capturedRefs))

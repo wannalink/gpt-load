@@ -42,7 +42,10 @@ func TestReportedModelOnlyAffectsObservation(t *testing.T) {
 				handler.dialects = dialect.NewSet(dialect.NewOpenAI())
 				sink := &recordingRequestLogSink{}
 				handler.requestLogSink = sink
-				table, err := pricing.NewTable([]pricing.Rule{{Identity: pricing.Identity{ChannelID: string(channel.CLIProxyAPI), ModelID: "upstream"}, Prices: pricing.Prices{Input: pricing.Price{NanoUSDPerMillion: 1_000_000, Set: true}, Output: pricing.Price{NanoUSDPerMillion: 1_000_000, Set: true}}}})
+				table, err := pricing.NewTable([]pricing.Rule{
+					{Identity: pricing.Identity{ChannelID: string(channel.CLIProxyAPI), ModelID: "upstream"}, Prices: pricing.Prices{Input: pricing.Price{NanoUSDPerMillion: 1_000_000, Set: true}, Output: pricing.Price{NanoUSDPerMillion: 1_000_000, Set: true}}},
+					{Identity: pricing.Identity{ChannelID: string(channel.CLIProxyAPI), ModelID: "different"}, Prices: pricing.Prices{Input: pricing.Price{NanoUSDPerMillion: 1_000_000, Set: true}, Output: pricing.Price{NanoUSDPerMillion: 1_000_000, Set: true}}},
+				})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -69,7 +72,11 @@ func TestReportedModelOnlyAffectsObservation(t *testing.T) {
 				if calls.Load() != 1 || e.Status != telemetry.RequestStatusSuccess || len(e.Attempts) != 1 || e.Attempts[0].WillRetry {
 					t.Fatalf("calls=%d status=%s attempts=%d", calls.Load(), e.Status, len(e.Attempts))
 				}
-				if e.UpstreamModel != "upstream" || e.Usage.Pricing.UpstreamModel != "upstream" || e.Usage.Pricing.EstimatedCostNanoUSD != 3 {
+				wantPricingModel := "upstream"
+				if reported != "" {
+					wantPricingModel = reported
+				}
+				if e.UpstreamModel != "upstream" || e.Usage.Pricing.UpstreamModel != wantPricingModel || e.Usage.Pricing.EstimatedCostNanoUSD != 3 {
 					t.Fatalf("selected model=%s pricing=%+v", e.UpstreamModel, e.Usage.Pricing)
 				}
 			})
