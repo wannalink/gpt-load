@@ -80,18 +80,20 @@ func (handler *Handler) waitCandidateCooldown(
 		waitDuration = 20 * time.Millisecond
 	}
 
-	utils.LogPlaneBestEffort(
-		handler.logger,
-		logrus.InfoLevel,
-		utils.LogPlaneData,
-		logrus.Fields{
-			"event":          "candidate_retry_wait",
-			"wait_duration":  waitDuration.String(),
-			"cooldown_until": earliest.Format(time.RFC3339),
-			"attempts":       forwardAttempts,
-		},
-		"No candidates available immediately; waiting for candidate cooldown",
-	)
+	if logger := handler.logger; logger != nil && logger.IsLevelEnabled(logrus.DebugLevel) {
+		utils.LogPlaneBestEffort(
+			logger,
+			logrus.DebugLevel,
+			utils.LogPlaneData,
+			logrus.Fields{
+				"event":          "candidate_retry_wait",
+				"wait_duration":  waitDuration.String(),
+				"cooldown_until": earliest.Format(time.RFC3339),
+				"attempts":       forwardAttempts,
+			},
+			"Waiting for candidate cooldown",
+		)
+	}
 
 	timer := time.NewTimer(waitDuration)
 	defer timer.Stop()
