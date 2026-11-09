@@ -1203,11 +1203,23 @@ async def reverse_proxy_handler(request: Request, path: str):
             resp_headers["cache-control"] = "no-cache"
             resp_headers["x-accel-buffering"] = "no"
 
+        async def stream_body():
+            try:
+                async for chunk in upstream_resp.aiter_raw():
+                    if await request.is_disconnected():
+                        logger.info(f"Client disconnected for /{path}; closing upstream connection to gpt-load engine.")
+                        await upstream_resp.aclose()
+                        break
+                    yield chunk
+            except Exception as e:
+                logger.debug(f"Stream proxy closed for /{path}: {e}")
+            finally:
+                await upstream_resp.aclose()
+
         return StreamingResponse(
-            upstream_resp.aiter_raw(),
+            stream_body(),
             status_code=upstream_resp.status_code,
             headers=resp_headers,
-            background=upstream_resp.aclose,
         )
     except httpx.ConnectError:
         return Response("Internal GPT-Load engine unavailable or starting up.", status_code=503)

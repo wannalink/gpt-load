@@ -32,6 +32,9 @@ func candidateRetryTimeoutBudget(snapshot *state.ConfigSnapshot) time.Duration {
 			timeout = snapshot.Settings.RequestTimeout
 		}
 	}
+	if timeout > 3*time.Minute {
+		timeout = 3 * time.Minute
+	}
 	return timeout
 }
 
