@@ -119,7 +119,7 @@ func TestRoutingTableLoggerSingleLine(t *testing.T) {
 		t.Errorf("log output contains raw multiline table border; expected clean single line: %s", logOutput)
 	}
 
-	if !strings.Contains(logOutput, "Routing candidates for synthetic-group (synthetic): model-a(1/2, AVAILABLE, 0s) | model-b(0/1, COOLDOWN, 5m0s)") {
+	if !strings.Contains(logOutput, "Routing candidates for synthetic-group (synthetic): model-a(1/2, AVAILABLE, 0s) | model-b(1/1, MODEL BUSY, 5m0s)") {
 		t.Errorf("unexpected log message format: %s", logOutput)
 	}
 }

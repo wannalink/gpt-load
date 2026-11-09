@@ -1178,7 +1178,7 @@ func (handler *Handler) executeAttempts(
 			var err error
 			selection, err = iterator.Next()
 			if errors.Is(err, scheduler.ErrExhausted) {
-				if lastDecision.Retry != health.RetryNone && forwardAttempts < forwardAttemptLimit && handler.waitCandidateCooldown(ginContext.Request.Context(), snapshot, iterator, requestStartedAt, forwardAttempts) {
+				if lastDecision.Retry != health.RetryNone && handler.waitCandidateCooldown(ginContext.Request.Context(), snapshot, iterator, requestStartedAt, forwardAttempts) {
 					continue
 				}
 				break

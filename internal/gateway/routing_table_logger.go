@@ -13,12 +13,14 @@ import (
 )
 
 type modelCandidateStats struct {
-	modelName      string
-	totalKeys      int
-	availableKeys  int
-	cooldownedKeys int
-	timeUntilAvail time.Duration
-	isOnCooldown   bool
+	modelName        string
+	totalKeys        int
+	availableKeys    int
+	quotaExhausted   int
+	isModelBusy      bool
+	modelBusyTime    time.Duration
+	isQuotaExhausted bool
+	quotaExhaustTime time.Duration
 }
 
 func logRoutingTable(
@@ -104,44 +106,51 @@ func computeModelStats(
 		}
 	}
 
-	var minCooldownUntil time.Time
-	var hasMinCooldown bool
+	var minQuotaCooldownUntil time.Time
+	var hasMinQuotaCooldown bool
+	var minModelCooldownUntil time.Time
+	var hasMinModelCooldown bool
 
 	for groupID, upstreamModelID := range matchedGroups {
 		views := registry.GroupRuntimeViews(groupID)
 		for _, view := range views {
 			stats.totalKeys++
 
-			var cooldownUntil time.Time
+			// Check key-level quota cooldown
 			if view.CooldownUntil.After(now) {
-				cooldownUntil = view.CooldownUntil
-			}
-			if view.ModelCooldowns != nil {
-				// Check for cooldown under realModel, upstreamModelID, or requestedModel
-				for _, k := range []string{model, realModels[0], upstreamModelID, requestedModel} {
-					if k != "" {
-						if mUntil, ok := view.ModelCooldowns[k]; ok && mUntil.After(cooldownUntil) {
-							cooldownUntil = mUntil
-						}
-					}
-				}
-			}
-
-			if cooldownUntil.After(now) {
-				stats.cooldownedKeys++
-				if !hasMinCooldown || cooldownUntil.Before(minCooldownUntil) {
-					minCooldownUntil = cooldownUntil
-					hasMinCooldown = true
+				stats.quotaExhausted++
+				if !hasMinQuotaCooldown || view.CooldownUntil.Before(minQuotaCooldownUntil) {
+					minQuotaCooldownUntil = view.CooldownUntil
+					hasMinQuotaCooldown = true
 				}
 			} else {
 				stats.availableKeys++
 			}
+
+			// Check model-level high demand / busy endpoint cooldown
+			if view.ModelCooldowns != nil {
+				for _, k := range []string{model, realModels[0], upstreamModelID, requestedModel} {
+					if k != "" {
+						if mUntil, ok := view.ModelCooldowns[k]; ok && mUntil.After(now) {
+							if !hasMinModelCooldown || mUntil.Before(minModelCooldownUntil) {
+								minModelCooldownUntil = mUntil
+								hasMinModelCooldown = true
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
-	if stats.availableKeys == 0 && hasMinCooldown && minCooldownUntil.After(now) {
-		stats.isOnCooldown = true
-		stats.timeUntilAvail = minCooldownUntil.Sub(now)
+	if hasMinModelCooldown && minModelCooldownUntil.After(now) {
+		stats.isModelBusy = true
+		stats.modelBusyTime = minModelCooldownUntil.Sub(now)
+	}
+
+	if stats.availableKeys == 0 && hasMinQuotaCooldown && minQuotaCooldownUntil.After(now) {
+		stats.isQuotaExhausted = true
+		stats.quotaExhaustTime = minQuotaCooldownUntil.Sub(now)
 	}
 
 	return stats
@@ -193,9 +202,12 @@ func formatAndLogRoutingTable(
 	for _, s := range statsList {
 		statusStr := "AVAILABLE"
 		timeStr := "0s"
-		if s.isOnCooldown {
-			statusStr = "COOLDOWN"
-			timeStr = s.timeUntilAvail.Round(time.Second).String()
+		if s.isModelBusy {
+			statusStr = "MODEL BUSY"
+			timeStr = s.modelBusyTime.Round(time.Second).String()
+		} else if s.isQuotaExhausted {
+			statusStr = "QUOTA EXHAUSTED"
+			timeStr = s.quotaExhaustTime.Round(time.Second).String()
 		} else if s.totalKeys == 0 {
 			statusStr = "NO KEYS"
 			timeStr = "N/A"
