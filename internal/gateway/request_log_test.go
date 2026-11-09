@@ -2430,7 +2430,7 @@ func TestHandlerRPMLimitRejectsWithStableResponse(t *testing.T) {
 			assertJSONEqual(
 				t,
 				recorder.Body.String(),
-				`{"code":"access_key_rate_limited","message":"Access key rate limit exceeded."}`,
+				`{"error":{"message":"Access key rate limit exceeded.","type":"server_error","param":null,"code":"access_key_rate_limited"},"code":"access_key_rate_limited","message":"Access key rate limit exceeded."}`,
 			)
 			events := sink.snapshot()
 			if len(events) != 1 || len(events[0].Attempts) != 0 ||
