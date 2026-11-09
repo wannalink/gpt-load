@@ -755,7 +755,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		ginContext,
 		snapshot,
 		iterator,
-		forwardAttemptLimitForModel(snapshot, model),
+		forwardAttemptLimitForModel(snapshot, optionalModelValue(metadata.Model)),
 		allowedCredentialRefs,
 		selectedDialect,
 		parsed,

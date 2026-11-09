@@ -54,11 +54,24 @@ func isExplicitTerminalRejection(result UpstreamResult) bool {
 }
 
 func forwardAttemptLimitForModel(snapshot *state.ConfigSnapshot, model string) int {
+	if snapshot == nil {
+		return 1
+	}
 	limit := retryAttemptLimit(snapshot.Settings.RetryCount)
 	if targets, ok := snapshot.SyntheticModels[model]; ok && len(targets) > 0 {
 		limit = len(targets) * limit
 		if limit < 50 {
 			limit = 50
+		}
+		return limit
+	}
+	if snapshot.AutoModels != nil {
+		if autoEntry, ok := snapshot.AutoModels.Lookup(model); ok && len(autoEntry.Presets) > 0 {
+			limit = len(autoEntry.Presets) * limit
+			if limit < 50 {
+				limit = 50
+			}
+			return limit
 		}
 	}
 	return limit
