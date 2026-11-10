@@ -97,16 +97,22 @@ func isRecoverableUncommittedError(result UpstreamResult) bool {
 }
 
 func shouldRetrySyntheticProviderError(decision health.Decision, isSynthetic bool, result UpstreamResult) bool {
+	if result.StatusCode >= 200 && result.StatusCode < 300 {
+		return false
+	}
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
 	}
 	if isRecoverableUncommittedError(result) {
 		return true
 	}
-	return decision.Retry != health.RetryNone || isSynthetic
+	return decision.Retry != health.RetryNone || (isSynthetic && result.StatusCode >= 400)
 }
 
 func shouldRetrySyntheticResponse(decision health.Decision, isSynthetic bool, result UpstreamResult) bool {
+	if result.StatusCode >= 200 && result.StatusCode < 300 {
+		return false
+	}
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
 	}
@@ -117,11 +123,14 @@ func shouldRetrySyntheticResponse(decision health.Decision, isSynthetic bool, re
 }
 
 func shouldRetrySyntheticAttempt(decision health.Decision, isSynthetic bool, result UpstreamResult) bool {
+	if result.StatusCode >= 200 && result.StatusCode < 300 {
+		return false
+	}
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
 	}
 	if isRecoverableUncommittedError(result) {
 		return true
 	}
-	return decision.Retry != health.RetryNone || isSynthetic
+	return decision.Retry != health.RetryNone || (isSynthetic && result.StatusCode >= 400)
 }
