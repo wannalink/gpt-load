@@ -443,6 +443,17 @@ def ensure_web_ui_built():
             except Exception:
                 pass
 
+    # Ensure dist directory and fallback index.html always exist so go:embed never fails
+    dist_dir = os.path.dirname(os.path.join("internal", "webui", "dist", "index.html"))
+    os.makedirs(dist_dir, exist_ok=True)
+    dist_index = os.path.join(dist_dir, "index.html")
+    if not os.path.exists(dist_index) or os.path.getsize(dist_index) == 0:
+        try:
+            with open(dist_index, "w", encoding="utf-8") as f:
+                f.write('<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>GPT-Load</title></head><body><h1>GPT-Load</h1><p>Web UI fallback</p></body></html>')
+        except Exception:
+            pass
+
     web_dir = os.path.abspath("web")
     if not os.path.exists(web_dir) or not os.path.exists(os.path.join(web_dir, "package.json")):
         return
@@ -461,12 +472,6 @@ def ensure_web_ui_built():
         logger.info("Web UI compiled successfully into internal/webui/dist.")
     except Exception as exc:
         logger.error(f"Failed to compile Web UI assets: {exc}")
-        dist_dir = os.path.dirname(os.path.join("internal", "webui", "dist", "index.html"))
-        os.makedirs(dist_dir, exist_ok=True)
-        dist_index = os.path.join(dist_dir, "index.html")
-        if not os.path.exists(dist_index) or os.path.getsize(dist_index) == 0:
-            with open(dist_index, "w", encoding="utf-8") as f:
-                f.write('<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>GPT-Load</title></head><body><h1>GPT-Load</h1><p>Web UI fallback</p></body></html>')
 
 def get_current_commit_sha() -> str:
     try:
