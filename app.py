@@ -1149,7 +1149,7 @@ HOP_BY_HOP_HEADERS = {
 async def root_proxy_handler(request: Request):
     return await reverse_proxy_handler(request, "")
 
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], include_in_schema=False)
 async def reverse_proxy_handler(request: Request, path: str):
     """
     Transparently stream all GPT-Load data-plane (/v1/*), control-plane (/api/*),
@@ -1204,7 +1204,20 @@ async def reverse_proxy_handler(request: Request, path: str):
             resp_headers["x-accel-buffering"] = "no"
 
         async def stream_body():
+            disconnect_task = None
+            async def watch_disconnect():
+                try:
+                    while True:
+                        if await request.is_disconnected():
+                            logger.info(f"Client disconnected for /{path}; closing upstream connection to gpt-load engine.")
+                            await upstream_resp.aclose()
+                            break
+                        await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+
             try:
+                disconnect_task = asyncio.create_task(watch_disconnect())
                 async for chunk in upstream_resp.aiter_raw():
                     if await request.is_disconnected():
                         logger.info(f"Client disconnected for /{path}; closing upstream connection to gpt-load engine.")
@@ -1214,6 +1227,8 @@ async def reverse_proxy_handler(request: Request, path: str):
             except Exception as e:
                 logger.debug(f"Stream proxy closed for /{path}: {e}")
             finally:
+                if disconnect_task and not disconnect_task.done():
+                    disconnect_task.cancel()
                 await upstream_resp.aclose()
 
         return StreamingResponse(
