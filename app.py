@@ -404,7 +404,10 @@ def ensure_modern_go_compiler() -> Optional[str]:
         logger.info("Extracting Go 1.24.0 toolchain to /tmp/go...")
         import tarfile
         with tarfile.open(tar_path, "r:gz") as tar:
-            tar.extractall(path="/tmp")
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(path="/tmp", filter="data")
+            else:
+                tar.extractall(path="/tmp")
         if os.path.exists(tar_path):
             os.remove(tar_path)
         if os.path.exists(GO_BIN_PATH):
@@ -474,10 +477,38 @@ def ensure_web_ui_built():
         logger.error(f"Failed to compile Web UI assets: {exc}")
 
 def get_current_commit_sha() -> str:
+    for env_var in ["SPACE_COMMIT_SHA", "COMMIT_SHA", "GIT_COMMIT"]:
+        if os.environ.get(env_var):
+            return os.environ[env_var].strip()
     try:
         res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
-        if res.returncode == 0:
+        if res.returncode == 0 and res.stdout.strip():
             return res.stdout.strip()
+    except Exception:
+        pass
+    try:
+        git_dir = os.path.abspath(".git")
+        head_path = os.path.join(git_dir, "HEAD")
+        if os.path.exists(head_path):
+            with open(head_path, "r") as f:
+                ref = f.read().strip()
+            if ref.startswith("ref: "):
+                ref_path = os.path.join(git_dir, ref[5:])
+                if os.path.exists(ref_path):
+                    with open(ref_path, "r") as f:
+                        return f.read().strip()
+            elif len(ref) >= 40:
+                return ref
+    except Exception:
+        pass
+    try:
+        import hashlib
+        hasher = hashlib.sha256()
+        for fname in ["go.mod", "main.go", "web/package.json"]:
+            if os.path.exists(fname):
+                with open(fname, "rb") as f:
+                    hasher.update(f.read())
+        return hasher.hexdigest()[:40]
     except Exception:
         pass
     return ""
@@ -656,14 +687,28 @@ def stop_gpt_load_process():
 # ---------------------------------------------------------------------------
 # 6. FastAPI Router & Ingress Reverse-Proxy
 # ---------------------------------------------------------------------------
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect  # type: ignore
 from pydantic import BaseModel, Field, field_validator  # type: ignore
 from starlette.responses import PlainTextResponse, StreamingResponse  # type: ignore
 import httpx  # type: ignore
 import websockets  # type: ignore
 
-app = FastAPI(title="GPT-Load & Von Unified Gateway", docs_url=None, redoc_url=None)
 http_client: Optional[httpx.AsyncClient] = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global http_client
+    http_client = httpx.AsyncClient(
+        base_url=f"http://127.0.0.1:{INTERNAL_PORT}",
+        timeout=httpx.Timeout(connect=15.0, read=None, write=60.0, pool=None),
+        limits=httpx.Limits(max_keepalive_connections=100, max_connections=500),
+    )
+    yield
+    if http_client:
+        await http_client.aclose()
+
+app = FastAPI(title="GPT-Load & Von Unified Gateway", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 class SystemOneRequest(BaseModel):
     model: str = Field(default="von-latest")
@@ -710,21 +755,6 @@ def verify_von_token(request: Request, authorization: Optional[str]):
     is_valid = any(hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in valid_keys)
     if not is_valid:
         raise HTTPException(status_code=401, detail="Unauthorized: invalid API key")
-
-@app.on_event("startup")
-async def on_startup():
-    global http_client
-    http_client = httpx.AsyncClient(
-        base_url=f"http://127.0.0.1:{INTERNAL_PORT}",
-        timeout=httpx.Timeout(connect=15.0, read=None, write=60.0, pool=None),
-        limits=httpx.Limits(max_keepalive_connections=100, max_connections=500),
-    )
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    global http_client
-    if http_client:
-        await http_client.aclose()
 
 # --- Keep-Alive Health Probe (Zero GPU Quota) ---
 @app.get("/healthz", response_class=PlainTextResponse)
