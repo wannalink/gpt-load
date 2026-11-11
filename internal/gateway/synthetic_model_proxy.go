@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"net/http"
 	"strings"
 
 	"gpt-load/internal/execution"
@@ -77,9 +78,28 @@ func forwardAttemptLimitForModel(snapshot *state.ConfigSnapshot, model string) i
 	return limit
 }
 
+func isTimeoutResult(result UpstreamResult) bool {
+	if result.StatusCode == http.StatusGatewayTimeout || result.StatusCode == http.StatusRequestTimeout {
+		return true
+	}
+	if result.ExecutionError != nil {
+		if result.ExecutionError.Kind == execution.ErrorKindTimeout {
+			return true
+		}
+		switch result.ExecutionError.Code {
+		case "upstream_timeout", "upstream_stream_idle_timeout":
+			return true
+		}
+	}
+	return false
+}
+
 func isRecoverableUncommittedError(result UpstreamResult) bool {
 	if result.Committed || result.ExecutionError == nil {
 		return false
+	}
+	if isTimeoutResult(result) {
+		return true
 	}
 	if result.RequestWritten && result.ExecutionError.ReplaySafety != execution.ReplaySafetyRejectedBeforeProcessing {
 		return false
@@ -100,6 +120,9 @@ func shouldRetrySyntheticProviderError(decision health.Decision, isSynthetic boo
 	if result.StatusCode >= 200 && result.StatusCode < 300 {
 		return false
 	}
+	if isTimeoutResult(result) {
+		return true
+	}
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
 	}
@@ -113,6 +136,9 @@ func shouldRetrySyntheticResponse(decision health.Decision, isSynthetic bool, re
 	if result.StatusCode >= 200 && result.StatusCode < 300 {
 		return false
 	}
+	if isTimeoutResult(result) {
+		return true
+	}
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false
 	}
@@ -125,6 +151,9 @@ func shouldRetrySyntheticResponse(decision health.Decision, isSynthetic bool, re
 func shouldRetrySyntheticAttempt(decision health.Decision, isSynthetic bool, result UpstreamResult) bool {
 	if result.StatusCode >= 200 && result.StatusCode < 300 {
 		return false
+	}
+	if isTimeoutResult(result) {
+		return true
 	}
 	if decision.Category == health.FailureCategoryClientError || isExplicitTerminalRejection(result) {
 		return false

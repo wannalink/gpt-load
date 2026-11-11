@@ -133,6 +133,12 @@ func judgeUpstreamResult(
 		decision.Effect = health.EffectNone
 		decision.CooldownUntil = time.Time{}
 	}
+	if isTimeoutResult(result) {
+		decision.Effect = health.EffectCooldownModel
+		decision.RuleID = "gemini.high_demand_model_cooldown"
+		decision.CooldownUntil = now.Add(30 * time.Second)
+		decision.Retry = health.RetryNextCandidate
+	}
 	return decision
 }
 

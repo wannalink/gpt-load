@@ -700,3 +700,91 @@ func TestSyntheticProxy503HighDemandFailsOverToNextModel(t *testing.T) {
 		t.Fatalf("attempt 2 model = %s, want gemini-3.8-flash (should NOT retry gemini-flash-latest on cred-2)", forwarder.inputs[1].UpstreamModelID)
 	}
 }
+
+func TestSyntheticProxyTimeoutFailsOverToNextModel(t *testing.T) {
+	// Attempt 1 receives an upstream timeout (HTTP 504 / ErrorKindTimeout) for gemini-flash-latest.
+	// Synthetic model proxy must treat this timeout as a busy/failed response and failover immediately to gemini-3.8-flash (attempt 2).
+	timeoutMsg := `upstream request timed out`
+	resultsList := []UpstreamResult{
+		withProviderErrorBeforeCommit(UpstreamResult{
+			StatusCode:     http.StatusGatewayTimeout,
+			Header:         http.Header{"Content-Type": {"application/json"}},
+			RequestWritten: true,
+			ExecutionError: &execution.ErrorEvidence{
+				Kind:         execution.ErrorKindTimeout,
+				Code:         "upstream_timeout",
+				StatusCode:   http.StatusGatewayTimeout,
+				Summary:      timeoutMsg,
+				ReplaySafety: execution.ReplaySafetyUnknown,
+			},
+		}),
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte(`{"id":"chatcmpl-timeout-failover-success","choices":[{"message":{"content":"hello from fallback after timeout"}}]}`),
+		},
+	}
+	forwarder := &scriptedForwarder{results: resultsList, streamResults: resultsList}
+
+	handler, manager, registry := newHandlerForTest(t, forwarder)
+	if _, err := manager.Publish(state.CompileInput{
+		ChannelRegistry: channel.NewRegistry(),
+		Groups: []state.GroupConfig{
+			{
+				ConnectionType: "api_key", ID: 1, Name: "gemini-group", ChannelID: channel.OpenAI,
+				Params: json.RawMessage(`{}`),
+				Models: []state.ModelConfig{{ID: "gemini-flash-latest"}, {ID: "gemini-3.8-flash"}}, Enabled: true,
+			},
+		},
+		Credentials: []state.CredentialConfig{
+			{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1"},
+			{ID: 2, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 2, Fingerprint: "cred-2"},
+		},
+		SyntheticModels: []state.SyntheticModelConfig{
+			{
+				ID:           1,
+				Name:         "gemini-auto",
+				TargetModels: []string{"gemini-flash-latest", "gemini-3.8-flash"},
+				Enabled:      true,
+			},
+		},
+		AccessKeys: []state.AccessKeyConfig{{
+			ID: 1, Name: "client", KeyHash: handler.encryption.Hash("gl-client"),
+			Status: state.AccessKeyStatusActive,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	enc1, _ := handler.encryption.Encrypt(`{"api_key":"sk-gemini-1"}`)
+	enc2, _ := handler.encryption.Encrypt(`{"api_key":"sk-gemini-2"}`)
+	_ = registry.ReplaceCredentials([]state.CredentialEntry{
+		{ID: 1, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 1, Fingerprint: "cred-1", EncryptedValue: enc1},
+		{ID: 2, GroupID: 1, Status: state.CredentialStatusActive, Version: 1, IdentityGeneration: 2, Fingerprint: "cred-2", EncryptedValue: enc2},
+	})
+
+	engine := gin.New()
+	bindGatewayRoutesForTest(t, engine, handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"gemini-auto","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer gl-client")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, req)
+
+	// Must succeed with 200 OK after failover
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", recorder.Code, recorder.Body.String())
+	}
+	// Must have made 2 attempts: attempt 1 on gemini-flash-latest (timeout), attempt 2 on gemini-3.8-flash (200)
+	if len(forwarder.inputs) != 2 {
+		t.Fatalf("attempts count = %d, want 2", len(forwarder.inputs))
+	}
+	if forwarder.inputs[0].UpstreamModelID != "gemini-flash-latest" {
+		t.Fatalf("attempt 1 model = %s, want gemini-flash-latest", forwarder.inputs[0].UpstreamModelID)
+	}
+	if forwarder.inputs[1].UpstreamModelID != "gemini-3.8-flash" {
+		t.Fatalf("attempt 2 model = %s, want gemini-3.8-flash", forwarder.inputs[1].UpstreamModelID)
+	}
+}
