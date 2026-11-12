@@ -106,6 +106,9 @@ func TestBuildContainerInstallsDataPlaneCORSBeforeRouteAuthentication(t *testing
 		if dbErr == nil {
 			t.Cleanup(func() { _ = sqlDB.Close() })
 		}
+		if migrateErr := storage.AutoMigrate(db); migrateErr != nil {
+			t.Fatalf("AutoMigrate() error = %v", migrateErr)
+		}
 	}); err != nil {
 		t.Fatalf("resolve container dependencies: %v", err)
 	}

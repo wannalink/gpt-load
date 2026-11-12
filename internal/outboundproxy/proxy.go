@@ -73,7 +73,7 @@ func Environment() *Config {
 
 func Normalize(input Config) (Config, error) {
 	switch input.Mode {
-	case ModeInherit, ModeDirect:
+	case ModeInherit, ModeDirect, ModeEnvironment:
 		if input.URL != "" || input.ProxyID != 0 {
 			return Config{}, ErrInvalidConfig
 		}

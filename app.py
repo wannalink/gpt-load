@@ -1203,11 +1203,16 @@ async def reverse_proxy_handler(request: Request, path: str):
             req_cancelled.set()
             return Response("Client disconnected", status_code=499)
 
+        req_body = None
+        if request.method in ("POST", "PUT", "PATCH"):
+            req_body = await request.body()
+            req_headers["content-length"] = str(len(req_body))
+
         upstream_req = http_client.build_request(
             method=request.method,
             url=target_url,
             headers=req_headers,
-            content=request.stream(),
+            content=req_body,
         )
 
         upstream_resp = await http_client.send(upstream_req, stream=True)

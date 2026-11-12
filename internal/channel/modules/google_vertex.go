@@ -8,10 +8,7 @@ import (
 	"gpt-load/internal/protocol"
 )
 
-const (
-	vertexGeminiRouteResolver     spec.RouteResolverID = "vertex_gemini_native"
-	vertexEmbeddingsRouteResolver spec.RouteResolverID = "vertex_embeddings"
-)
+const vertexGeminiRouteResolver spec.RouteResolverID = "vertex_gemini_native"
 
 func GoogleVertex() spec.Module {
 	return spec.Module{
@@ -40,13 +37,6 @@ func GoogleVertex() spec.Module {
 				EndpointPolicy:    spec.EndpointCloudParams,
 			},
 			Routes: []spec.Route{
-				{
-					ClientProtocol: protocol.OpenAIEmbeddings,
-					Operation:      execution.OperationEmbeddingsCreate,
-					Mode:           execution.RouteConverted,
-					Resolver:       vertexEmbeddingsRouteResolver,
-					PossibleModes:  []execution.RouteMode{execution.RouteConverted},
-				},
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationChatCompletion, execution.RouteConverted),
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationListModels, execution.RouteConverted),
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationProbe, execution.RouteConverted),
@@ -70,25 +60,10 @@ func GoogleVertex() spec.Module {
 					Resolver:       vertexGeminiRouteResolver,
 					PossibleModes:  []execution.RouteMode{execution.RouteConverted, execution.RouteNative},
 				},
-				{
-					ClientProtocol: protocol.GeminiEmbeddings,
-					Operation:      execution.OperationEmbeddingsCreate,
-					Mode:           execution.RouteNative,
-					Resolver:       vertexEmbeddingsRouteResolver,
-					PossibleModes:  []execution.RouteMode{execution.RouteNative},
-				},
-				{
-					ClientProtocol: protocol.GeminiEmbeddings,
-					Operation:      execution.OperationProbe,
-					Mode:           execution.RouteNative,
-					Resolver:       vertexEmbeddingsRouteResolver,
-					PossibleModes:  []execution.RouteMode{execution.RouteNative},
-				},
 			},
 		},
 		Extensions: spec.Extensions{RouteResolvers: map[spec.RouteResolverID]spec.RouteResolver{
-			vertexGeminiRouteResolver:     resolveVertexGeminiRoute,
-			vertexEmbeddingsRouteResolver: resolveVertexEmbeddingsRoute,
+			vertexGeminiRouteResolver: resolveVertexGeminiRoute,
 		}},
 	}
 }
@@ -99,22 +74,6 @@ func resolveVertexGeminiRoute(upstreamModel string, defaultMode execution.RouteM
 		return execution.RouteNative
 	}
 	return defaultMode
-}
-
-func resolveVertexEmbeddingsRoute(upstreamModel string, defaultMode execution.RouteMode) execution.RouteMode {
-	if _, supported := NormalizeVertexEmbeddingsModel(upstreamModel); !supported {
-		return ""
-	}
-	return defaultMode
-}
-
-// NormalizeVertexEmbeddingsModel 沿用 Gemini 模型格式，但向量操作不支持数字自定义端点。
-func NormalizeVertexEmbeddingsModel(upstreamModel string) (string, bool) {
-	model, ok := NormalizeVertexGeminiModel(upstreamModel)
-	if !ok || strings.Trim(model, "0123456789") == "" {
-		return "", false
-	}
-	return model, true
 }
 
 // NormalizeVertexGeminiModel returns the Vertex resource ID for a Gemini,

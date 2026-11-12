@@ -295,7 +295,7 @@ func TestCacheReplaceErrorAndRollbackFailureRetainsPreviousBackupPath(t *testing
 	if err != nil {
 		t.Fatalf("Glob(backup files) error = %v", err)
 	}
-	if len(backupFiles) != 1 || !strings.Contains(storeErr.Error(), backupFiles[0]) {
+	if len(backupFiles) != 1 || !strings.Contains(storeErr.Error(), strings.ReplaceAll(backupFiles[0], "\\", "\\\\")) {
 		t.Fatalf("retained backups/error = %#v/%q, want one explicit recovery path", backupFiles, storeErr)
 	}
 	backup, err := os.ReadFile(backupFiles[0])
@@ -410,7 +410,7 @@ func TestCacheRollbackReplaceFailureKeepsRecoverablePreviousBackup(t *testing.T)
 	if len(backupFiles) != 1 {
 		t.Fatalf("recoverable backup files = %#v, want exactly one retained backup", backupFiles)
 	}
-	if !strings.Contains(storeErr.Error(), backupFiles[0]) {
+	if !strings.Contains(storeErr.Error(), strings.ReplaceAll(backupFiles[0], "\\", "\\\\")) {
 		t.Fatalf("storeCache() error = %q, want explicit recoverable backup path %q", storeErr, backupFiles[0])
 	}
 	backup, err := os.ReadFile(backupFiles[0])
