@@ -41,10 +41,10 @@ import (
 )
 
 func TestSystemOutboundProxyProviderUsesEnvironmentAndLatestGlobalSnapshot(t *testing.T) {
-	t.Setenv("HTTPS_PROXY", "http://environment-proxy.example.com:8080")
 	t.Setenv("https_proxy", "")
 	t.Setenv("HTTP_PROXY", "")
 	t.Setenv("http_proxy", "")
+	t.Setenv("HTTPS_PROXY", "http://environment-proxy.example.com:8080")
 
 	manager := state.NewManager()
 	provider := newSystemOutboundProxyProvider(manager)

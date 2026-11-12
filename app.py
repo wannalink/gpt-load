@@ -1183,6 +1183,7 @@ async def reverse_proxy_handler(request: Request, path: str):
 
     req_cancelled = asyncio.Event()
     upstream_resp = None
+    disconnect_task = None
 
     async def watch_disconnect():
         try:
@@ -1195,18 +1196,18 @@ async def reverse_proxy_handler(request: Request, path: str):
         except Exception:
             pass
 
-    disconnect_task = asyncio.create_task(watch_disconnect())
-
     try:
+        req_body = None
+        if request.method in ("POST", "PUT", "PATCH"):
+            req_body = await request.body()
+            req_headers["content-length"] = str(len(req_body))
+
         if await request.is_disconnected():
             logger.info(f"Client disconnected before sending /{path}")
             req_cancelled.set()
             return Response("Client disconnected", status_code=499)
 
-        req_body = None
-        if request.method in ("POST", "PUT", "PATCH"):
-            req_body = await request.body()
-            req_headers["content-length"] = str(len(req_body))
+        disconnect_task = asyncio.create_task(watch_disconnect())
 
         upstream_req = http_client.build_request(
             method=request.method,
@@ -1270,7 +1271,7 @@ async def reverse_proxy_handler(request: Request, path: str):
         logger.error(f"Ingress proxy error for /{path}: {exc}")
         return Response(f"Proxy error: {exc}", status_code=502)
     finally:
-        if not disconnect_task.done():
+        if disconnect_task is not None and not disconnect_task.done():
             disconnect_task.cancel()
 
 # ---------------------------------------------------------------------------
