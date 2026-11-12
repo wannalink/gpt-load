@@ -1211,14 +1211,42 @@ async def reverse_proxy_handler(request: Request, path: str):
     req_headers["x-forwarded-proto"] = request.url.scheme
     req_headers["x-forwarded-host"] = request.headers.get("host", f"0.0.0.0:{PUBLIC_PORT}")
 
+    req_cancelled = asyncio.Event()
+    upstream_resp = None
+
+    async def watch_disconnect():
+        try:
+            while not req_cancelled.is_set():
+                if await request.is_disconnected():
+                    logger.info(f"Client disconnected for /{path}; cancelling upstream request.")
+                    req_cancelled.set()
+                    break
+                await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
+    disconnect_task = asyncio.create_task(watch_disconnect())
+
     try:
+        if await request.is_disconnected():
+            logger.info(f"Client disconnected before sending /{path}")
+            req_cancelled.set()
+            return Response("Client disconnected", status_code=499)
+
         upstream_req = http_client.build_request(
             method=request.method,
             url=target_url,
             headers=req_headers,
             content=request.stream(),
         )
+
         upstream_resp = await http_client.send(upstream_req, stream=True)
+
+        if req_cancelled.is_set() or await request.is_disconnected():
+            logger.info(f"Client disconnected while upstream request was being sent for /{path}")
+            req_cancelled.set()
+            await upstream_resp.aclose()
+            return Response("Client disconnected", status_code=499)
 
         resp_headers = dict(upstream_resp.headers)
         for hop in HOP_BY_HOP_HEADERS:
@@ -1239,31 +1267,17 @@ async def reverse_proxy_handler(request: Request, path: str):
             resp_headers["x-accel-buffering"] = "no"
 
         async def stream_body():
-            disconnect_task = None
-            async def watch_disconnect():
-                try:
-                    while True:
-                        if await request.is_disconnected():
-                            logger.info(f"Client disconnected for /{path}; closing upstream connection to gpt-load engine.")
-                            await upstream_resp.aclose()
-                            break
-                        await asyncio.sleep(0.5)
-                except Exception:
-                    pass
-
             try:
-                disconnect_task = asyncio.create_task(watch_disconnect())
                 async for chunk in upstream_resp.aiter_raw():
-                    if await request.is_disconnected():
-                        logger.info(f"Client disconnected for /{path}; closing upstream connection to gpt-load engine.")
-                        await upstream_resp.aclose()
+                    if req_cancelled.is_set() or await request.is_disconnected():
+                        logger.info(f"Client disconnected during streaming for /{path}; closing upstream connection.")
+                        req_cancelled.set()
                         break
                     yield chunk
             except Exception as e:
                 logger.debug(f"Stream proxy closed for /{path}: {e}")
             finally:
-                if disconnect_task and not disconnect_task.done():
-                    disconnect_task.cancel()
+                req_cancelled.set()
                 await upstream_resp.aclose()
 
         return StreamingResponse(
@@ -1272,10 +1286,17 @@ async def reverse_proxy_handler(request: Request, path: str):
             headers=resp_headers,
         )
     except httpx.ConnectError:
+        req_cancelled.set()
         return Response("Internal GPT-Load engine unavailable or starting up.", status_code=503)
     except Exception as exc:
+        req_cancelled.set()
+        if upstream_resp is not None:
+            await upstream_resp.aclose()
         logger.error(f"Ingress proxy error for /{path}: {exc}")
         return Response(f"Proxy error: {exc}", status_code=502)
+    finally:
+        if not disconnect_task.done():
+            disconnect_task.cancel()
 
 # ---------------------------------------------------------------------------
 # 8. Main Supervisor Entrypoint
