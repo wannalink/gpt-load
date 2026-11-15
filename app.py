@@ -86,7 +86,8 @@ if is_huggingface_space():
 else:
     LOCAL_DATA_DIR = os.path.abspath(os.getenv("LOCAL_DATA_DIR", "./data"))
 
-# Persistent log file alongside gpt-load.db in attached storage
+# Persistent and local log files alongside gpt-load.db
+LOCAL_LOG_FILE = os.path.join(LOCAL_DATA_DIR, "gpt-load.log")
 PERSISTENT_LOG_FILE = os.path.join(HF_STORAGE_DIR, "gpt-load.log")
 
 def setup_space_logging():
@@ -110,13 +111,15 @@ def setup_space_logging():
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    try:
-        file_handler = logging.FileHandler(PERSISTENT_LOG_FILE, encoding="utf-8")
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-    except Exception as exc:
-        sys.stderr.write(f"Notice setting up persistent log file {PERSISTENT_LOG_FILE}: {exc}\n")
+    for log_path in {LOCAL_LOG_FILE, PERSISTENT_LOG_FILE}:
+        try:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            f_handler = logging.FileHandler(log_path, encoding="utf-8")
+            f_handler.setLevel(logging.INFO)
+            f_handler.setFormatter(formatter)
+            root_logger.addHandler(f_handler)
+        except Exception as exc:
+            sys.stderr.write(f"Notice setting up log file {log_path}: {exc}\n")
 
     for _mod in ("httpx", "httpcore", "uvicorn.access", "uvicorn.error"):
         logging.getLogger(_mod).setLevel(logging.WARNING)
@@ -387,7 +390,7 @@ def sync_db_to_persistent_storage() -> bool:
 
         LAST_DB_SYNC_TIME = time.time()
         LAST_DB_SYNC_STATUS = "ok"
-        logger.info(
+        logger.debug(
             f"Successfully synced working database to persistent bucket: {persistent_db} "
             f"({os.path.getsize(persistent_db) / (1024*1024):.2f} MB)"
         )
@@ -397,13 +400,40 @@ def sync_db_to_persistent_storage() -> bool:
         logger.warning(f"Error syncing database to persistent bucket: {exc}")
         return False
 
+def sync_logs_to_persistent_storage() -> bool:
+    """Flush and synchronize active log file to persistent storage alongside database."""
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+    if not os.path.exists(LOCAL_LOG_FILE) or os.path.getsize(LOCAL_LOG_FILE) == 0:
+        return False
+
+    if os.path.abspath(LOCAL_LOG_FILE) == os.path.abspath(PERSISTENT_LOG_FILE):
+        return True
+
+    try:
+        os.makedirs(HF_STORAGE_DIR, exist_ok=True)
+        shutil.copyfile(LOCAL_LOG_FILE, PERSISTENT_LOG_FILE)
+        try:
+            os.chmod(PERSISTENT_LOG_FILE, 0o666)
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        logger.debug(f"Notice syncing log file to persistent bucket: {exc}")
+        return False
+
 def background_db_sync_poller():
-    """Background worker periodically syncing local working SQLite DB to the Storage Bucket."""
+    """Background worker periodically syncing local working SQLite DB and logs to the Storage Bucket."""
     while not SHUTDOWN_EVENT.is_set():
         SHUTDOWN_EVENT.wait(DB_SYNC_INTERVAL_SECONDS)
         if SHUTDOWN_EVENT.is_set():
             break
         sync_db_to_persistent_storage()
+        sync_logs_to_persistent_storage()
 
 # ---------------------------------------------------------------------------
 # 5. GPT-Load Process Manager & Automated On-Boot Build Pipeline
@@ -648,11 +678,13 @@ def start_gpt_load_process() -> Optional[subprocess.Popen]:
     )
 
     def pump_go_logs():
-        log_file = None
-        try:
-            log_file = open(PERSISTENT_LOG_FILE, "a", encoding="utf-8")
-        except Exception:
-            pass
+        log_files = []
+        for path in {LOCAL_LOG_FILE, PERSISTENT_LOG_FILE}:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                log_files.append(open(path, "a", encoding="utf-8"))
+            except Exception:
+                pass
 
         try:
             if GPT_LOAD_PROC and GPT_LOAD_PROC.stdout:
@@ -661,15 +693,18 @@ def start_gpt_load_process() -> Optional[subprocess.Popen]:
                         break
                     sys.stdout.write(line)
                     sys.stdout.flush()
-                    if log_file:
-                        log_file.write(line)
-                        log_file.flush()
+                    for f in log_files:
+                        try:
+                            f.write(line)
+                            f.flush()
+                        except Exception:
+                            pass
         except Exception:
             pass
         finally:
-            if log_file:
+            for f in log_files:
                 try:
-                    log_file.close()
+                    f.close()
                 except Exception:
                     pass
 
@@ -713,8 +748,9 @@ def stop_gpt_load_process():
                 pass
     GPT_LOAD_PROC = None
 
-    logger.info("Performing final database synchronization to persistent bucket...")
+    logger.info("Performing final database and log synchronization to persistent bucket...")
     sync_db_to_persistent_storage()
+    sync_logs_to_persistent_storage()
 
 # ---------------------------------------------------------------------------
 # 6. FastAPI Router & Ingress Reverse-Proxy
@@ -1200,11 +1236,31 @@ with gr.Blocks(title="Von Decision Server") as demo:
 app = gr.mount_gradio_app(app, demo, path="/gradio")
 
 # --- HTTP Data-Plane, Control-Plane, & WebUI Reverse-Proxy ---
+STATIC_ASSET_EXTENSIONS = (
+    ".js", ".css", ".svg", ".png", ".jpg", ".jpeg",
+    ".ico", ".woff", ".woff2", ".ttf", ".map", ".webp", ".json", ".html"
+)
+
+def is_internal_asset_path(path: str) -> bool:
+    """Return True if path represents static web UI assets or health probes that should not be logged."""
+    p = path.strip("/").lower()
+    if not p:
+        return True  # Root UI HTML
+    if p.startswith("assets/") or p.startswith("static/") or p.startswith("favicon") or p.startswith("gradio"):
+        return True
+    if any(p.endswith(ext) for ext in STATIC_ASSET_EXTENSIONS) and not p.startswith("v1/") and not p.startswith("api/"):
+        return True
+    if p in ("health", "healthz", "robots.txt", "theme-bootstrap.js"):
+        return True
+    return False
+
 ACTIVE_CONNECTIONS: dict[str, dict[str, Any]] = {}
 ACTIVE_CONN_LOCK = threading.Lock()
 _CONN_COUNTER = 0
 
-def register_active_conn(path: str, method: str, client_ip: str) -> str:
+def register_active_conn(path: str, method: str, client_ip: str) -> Optional[str]:
+    if is_internal_asset_path(path):
+        return None
     global _CONN_COUNTER
     with ACTIVE_CONN_LOCK:
         _CONN_COUNTER += 1
@@ -1220,12 +1276,16 @@ def register_active_conn(path: str, method: str, client_ip: str) -> str:
     logger.info(f"[INGRESS] Connection opened: {conn_id} {method} /{path} from {client_ip} (active: {active_count})")
     return conn_id
 
-def update_active_conn(conn_id: str, status: str):
+def update_active_conn(conn_id: Optional[str], status: str):
+    if not conn_id:
+        return
     with ACTIVE_CONN_LOCK:
         if conn_id in ACTIVE_CONNECTIONS:
             ACTIVE_CONNECTIONS[conn_id]["status"] = status
 
-def unregister_active_conn(conn_id: str, status_desc: str):
+def unregister_active_conn(conn_id: Optional[str], status_desc: str):
+    if not conn_id:
+        return
     with ACTIVE_CONN_LOCK:
         info = ACTIVE_CONNECTIONS.pop(conn_id, None)
         active_count = len(ACTIVE_CONNECTIONS)
@@ -1242,11 +1302,11 @@ def background_connection_watchdog():
                 continue
             now = time.time()
             summary = [
-                f"{cid}: {c['method']} /{c['path']} [status={c['status']}, age={now - c['start_time']:.1f}s, ip={c['client_ip']}]"
+                f"{cid}: {c['method']} /{c['path']} [status={c['status']}, age={int(now - c['start_time'])}s]"
                 for cid, c in list(ACTIVE_CONNECTIONS.items())
             ]
             count = len(summary)
-        logger.warning(f"[INGRESS WATCHDOG] {count} active in-flight connection(s):\n  " + "\n  ".join(summary))
+        logger.info(f"[MONITOR] {count} active:\n  " + "\n  ".join(summary))
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -1314,7 +1374,8 @@ async def reverse_proxy_handler(request: Request, path: str):
         try:
             while not req_cancelled.is_set():
                 if await request.is_disconnected():
-                    logger.info(f"[INGRESS] Client disconnected for /{path} ({conn_id}); cancelling upstream request.")
+                    if conn_id:
+                        logger.info(f"[INGRESS] Client disconnected for /{path} ({conn_id}); cancelling upstream request.")
                     req_cancelled.set()
                     break
                 await asyncio.sleep(0.5)
@@ -1328,7 +1389,8 @@ async def reverse_proxy_handler(request: Request, path: str):
             req_headers["content-length"] = str(len(req_body))
 
         if await request.is_disconnected():
-            logger.info(f"[INGRESS] Client disconnected before sending /{path} ({conn_id})")
+            if conn_id:
+                logger.info(f"[INGRESS] Client disconnected before sending /{path} ({conn_id})")
             req_cancelled.set()
             unregister_active_conn(conn_id, "pre_send_disconnect")
             return Response("Client disconnected", status_code=499)
@@ -1357,12 +1419,14 @@ async def reverse_proxy_handler(request: Request, path: str):
             upstream_resp = send_task.result()
             update_active_conn(conn_id, f"headers_received_{upstream_resp.status_code}")
         else:
-            logger.info(f"[INGRESS] Client disconnected while waiting for upstream response headers for /{path} ({conn_id})")
+            if conn_id:
+                logger.info(f"[INGRESS] Client disconnected while waiting for upstream response headers for /{path} ({conn_id})")
             unregister_active_conn(conn_id, "header_wait_disconnect")
             return Response("Client disconnected", status_code=499)
 
         if req_cancelled.is_set() or await request.is_disconnected():
-            logger.info(f"[INGRESS] Client disconnected while upstream request was being sent for /{path} ({conn_id})")
+            if conn_id:
+                logger.info(f"[INGRESS] Client disconnected while upstream request was being sent for /{path} ({conn_id})")
             req_cancelled.set()
             await upstream_resp.aclose()
             unregister_active_conn(conn_id, "post_send_disconnect")
@@ -1392,12 +1456,14 @@ async def reverse_proxy_handler(request: Request, path: str):
             try:
                 async for chunk in upstream_resp.aiter_raw():
                     if req_cancelled.is_set() or await request.is_disconnected():
-                        logger.info(f"[INGRESS] Client disconnected during streaming for /{path} ({conn_id}); closing upstream connection.")
+                        if conn_id:
+                            logger.info(f"[INGRESS] Client disconnected during streaming for /{path} ({conn_id}); closing upstream connection.")
                         req_cancelled.set()
                         break
                     yield chunk
             except Exception as e:
-                logger.debug(f"[INGRESS] Stream proxy closed for /{path} ({conn_id}): {e}")
+                if conn_id:
+                    logger.debug(f"[INGRESS] Stream proxy closed for /{path} ({conn_id}): {e}")
             finally:
                 req_cancelled.set()
                 await upstream_resp.aclose()
@@ -1417,7 +1483,8 @@ async def reverse_proxy_handler(request: Request, path: str):
         req_cancelled.set()
         if upstream_resp is not None:
             await upstream_resp.aclose()
-        logger.error(f"[INGRESS] Ingress proxy error for /{path} ({conn_id}): {exc}")
+        if conn_id:
+            logger.error(f"[INGRESS] Ingress proxy error for /{path} ({conn_id}): {exc}")
         unregister_active_conn(conn_id, f"error: {exc}")
         return Response(f"Proxy error: {exc}", status_code=502)
     finally:
