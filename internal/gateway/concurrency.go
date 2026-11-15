@@ -2,6 +2,10 @@ package gateway
 
 import (
 	"net/http"
+	"sync"
+	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
@@ -26,13 +30,43 @@ func (h *Handler) acquireRequestConcurrency(keyID uint) (release func(), failure
 		if key.ConcurrencyLimit != nil {
 			limit = *key.ConcurrencyLimit
 		}
-		var allowed bool
-		release, allowed = h.manager.Concurrency().TryAcquireRequest(keyID, snapshot.Settings.GlobalConcurrencyLimit, limit)
+		innerRelease, allowed := h.manager.Concurrency().TryAcquireRequest(keyID, snapshot.Settings.GlobalConcurrencyLimit, limit)
 		if !allowed {
 			failure = &reasonConcurrencyLimit
-		} else {
-			failure = nil
+			snap := h.manager.Concurrency().Snapshot()
+			logrus.WithFields(logrus.Fields{
+				"event":        "concurrency_limit_exceeded",
+				"key_id":       keyID,
+				"key_name":     key.Name,
+				"key_limit":    limit,
+				"global":       snap.Global,
+				"global_limit": snapshot.Settings.GlobalConcurrencyLimit,
+			}).Warn("[CONCURRENCY] Request concurrency limit exceeded")
+			return true
 		}
+		failure = nil
+		start := time.Now()
+		snap := h.manager.Concurrency().Snapshot()
+		logrus.WithFields(logrus.Fields{
+			"event":     "concurrency_request_acquired",
+			"key_id":    keyID,
+			"key_name":  key.Name,
+			"global":    snap.Global,
+			"key_count": snap.AccessKeys[keyID],
+		}).Info("[CONCURRENCY] Request concurrency acquired")
+
+		release = sync.OnceFunc(func() {
+			innerRelease()
+			duration := time.Since(start)
+			afterSnap := h.manager.Concurrency().Snapshot()
+			logrus.WithFields(logrus.Fields{
+				"event":       "concurrency_request_released",
+				"key_id":      keyID,
+				"duration_ms": duration.Milliseconds(),
+				"global":      afterSnap.Global,
+				"key_count":   afterSnap.AccessKeys[keyID],
+			}).Info("[CONCURRENCY] Request concurrency released")
+		})
 		return true
 	})
 	return
@@ -48,13 +82,41 @@ func (h *Handler) acquireGroupConcurrency(groupID uint) (release func(), failure
 		if !exists {
 			return false
 		}
-		var allowed bool
-		release, allowed = h.manager.Concurrency().TryAcquireGroup(groupID, group.ConcurrencyLimit)
+		innerRelease, allowed := h.manager.Concurrency().TryAcquireGroup(groupID, group.ConcurrencyLimit)
 		if !allowed {
 			failure = &reasonConcurrencyLimit
-		} else {
-			failure = nil
+			snap := h.manager.Concurrency().Snapshot()
+			logrus.WithFields(logrus.Fields{
+				"event":       "group_concurrency_limit_exceeded",
+				"group_id":    groupID,
+				"group_name":  group.Name,
+				"group_limit": group.ConcurrencyLimit,
+				"group_count": snap.Groups[groupID],
+			}).Warn("[CONCURRENCY] Group concurrency limit exceeded")
+			return true
 		}
+		failure = nil
+		start := time.Now()
+		snap := h.manager.Concurrency().Snapshot()
+		logrus.WithFields(logrus.Fields{
+			"event":       "concurrency_group_acquired",
+			"group_id":    groupID,
+			"group_name":  group.Name,
+			"group_count": snap.Groups[groupID],
+		}).Info("[CONCURRENCY] Group concurrency acquired")
+
+		release = sync.OnceFunc(func() {
+			innerRelease()
+			duration := time.Since(start)
+			afterSnap := h.manager.Concurrency().Snapshot()
+			logrus.WithFields(logrus.Fields{
+				"event":       "concurrency_group_released",
+				"group_id":    groupID,
+				"group_name":  group.Name,
+				"duration_ms": duration.Milliseconds(),
+				"group_count": afterSnap.Groups[groupID],
+			}).Info("[CONCURRENCY] Group concurrency released")
+		})
 		return true
 	})
 	return

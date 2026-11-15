@@ -29,7 +29,11 @@ func isGeminiThrottledTarget(spec AttemptSpec) bool {
 		return false
 	}
 	channelID := strings.ToLower(strings.TrimSpace(spec.ChannelID))
-	return channelID == "gemini"
+	if channelID == "gemini" || channelID == "vertex" || channelID == "google" || channelID == "google-vertex" {
+		return true
+	}
+	model := strings.ToLower(geminiTargetModel(spec))
+	return strings.Contains(model, "gemini")
 }
 
 // isResourceExhausted detects Gemini's exact resource exhaustion response: HTTP 429 with
@@ -200,6 +204,7 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 		s.throttled = true
 	}
 	s.mu.Unlock()
+	s.sendMu.Unlock()
 
 	var released bool
 	release = func(statusCode int, hitExhaustion429 bool) {
@@ -207,7 +212,6 @@ func (s *geminiRateLimitState) beforeSend(ctx context.Context) (release func(sta
 			return
 		}
 		released = true
-		defer s.sendMu.Unlock()
 
 		s.mu.Lock()
 		defer s.mu.Unlock()

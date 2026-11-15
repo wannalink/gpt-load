@@ -31,14 +31,8 @@ import time
 import urllib.request
 from typing import Any, Dict, Optional, Union
 
-# Suppress noisy HTTP transport loggers
-for _mod in ("httpx", "httpcore", "uvicorn", "uvicorn.access", "uvicorn.error"):
-    logging.getLogger(_mod).setLevel(logging.WARNING)
-
+os.environ["PYTHONUNBUFFERED"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("gateway_space")
 
 # ---------------------------------------------------------------------------
 # 1. Environment & Space Configuration
@@ -91,6 +85,44 @@ if is_huggingface_space():
     LOCAL_DATA_DIR = os.path.abspath(os.getenv("LOCAL_DATA_DIR", "/tmp/gpt-load/data"))
 else:
     LOCAL_DATA_DIR = os.path.abspath(os.getenv("LOCAL_DATA_DIR", "./data"))
+
+# Persistent log file alongside gpt-load.db in attached storage
+PERSISTENT_LOG_FILE = os.path.join(HF_STORAGE_DIR, "gpt-load.log")
+
+def setup_space_logging():
+    """Configure unbuffered logging to console and persistent log file in attached storage."""
+    try:
+        os.makedirs(HF_STORAGE_DIR, exist_ok=True)
+        os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    try:
+        file_handler = logging.FileHandler(PERSISTENT_LOG_FILE, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+    except Exception as exc:
+        sys.stderr.write(f"Notice setting up persistent log file {PERSISTENT_LOG_FILE}: {exc}\n")
+
+    for _mod in ("httpx", "httpcore", "uvicorn.access", "uvicorn.error"):
+        logging.getLogger(_mod).setLevel(logging.WARNING)
+
+setup_space_logging()
+logger = logging.getLogger("gateway_space")
 
 DB_SYNC_INTERVAL_SECONDS = int(os.getenv("DB_SYNC_INTERVAL_SECONDS", "300"))
 LAST_DB_SYNC_TIME: float = 0.0
@@ -609,9 +641,40 @@ def start_gpt_load_process() -> Optional[subprocess.Popen]:
     GPT_LOAD_PROC = subprocess.Popen(
         [bin_path],
         env=env,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
     )
+
+    def pump_go_logs():
+        log_file = None
+        try:
+            log_file = open(PERSISTENT_LOG_FILE, "a", encoding="utf-8")
+        except Exception:
+            pass
+
+        try:
+            if GPT_LOAD_PROC and GPT_LOAD_PROC.stdout:
+                for line in iter(GPT_LOAD_PROC.stdout.readline, ""):
+                    if not line:
+                        break
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    if log_file:
+                        log_file.write(line)
+                        log_file.flush()
+        except Exception:
+            pass
+        finally:
+            if log_file:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
+
+    go_log_thread = threading.Thread(target=pump_go_logs, daemon=True)
+    go_log_thread.start()
     return GPT_LOAD_PROC
 
 def wait_for_gpt_load_ready(timeout_seconds: int = 30) -> bool:
@@ -1137,6 +1200,54 @@ with gr.Blocks(title="Von Decision Server") as demo:
 app = gr.mount_gradio_app(app, demo, path="/gradio")
 
 # --- HTTP Data-Plane, Control-Plane, & WebUI Reverse-Proxy ---
+ACTIVE_CONNECTIONS: dict[str, dict[str, Any]] = {}
+ACTIVE_CONN_LOCK = threading.Lock()
+_CONN_COUNTER = 0
+
+def register_active_conn(path: str, method: str, client_ip: str) -> str:
+    global _CONN_COUNTER
+    with ACTIVE_CONN_LOCK:
+        _CONN_COUNTER += 1
+        conn_id = f"conn_{_CONN_COUNTER}"
+        ACTIVE_CONNECTIONS[conn_id] = {
+            "path": path,
+            "method": method,
+            "client_ip": client_ip,
+            "start_time": time.time(),
+            "status": "waiting_upstream",
+        }
+        active_count = len(ACTIVE_CONNECTIONS)
+    logger.info(f"[INGRESS] Connection opened: {conn_id} {method} /{path} from {client_ip} (active: {active_count})")
+    return conn_id
+
+def update_active_conn(conn_id: str, status: str):
+    with ACTIVE_CONN_LOCK:
+        if conn_id in ACTIVE_CONNECTIONS:
+            ACTIVE_CONNECTIONS[conn_id]["status"] = status
+
+def unregister_active_conn(conn_id: str, status_desc: str):
+    with ACTIVE_CONN_LOCK:
+        info = ACTIVE_CONNECTIONS.pop(conn_id, None)
+        active_count = len(ACTIVE_CONNECTIONS)
+    if info:
+        elapsed = time.time() - info["start_time"]
+        logger.info(f"[INGRESS] Connection closed: {conn_id} {info['method']} /{info['path']} ({status_desc}) after {elapsed:.2f}s (active remaining: {active_count})")
+
+def background_connection_watchdog():
+    """Periodically report active connections in-flight through the ingress proxy."""
+    while not SHUTDOWN_EVENT.is_set():
+        time.sleep(20)
+        with ACTIVE_CONN_LOCK:
+            if not ACTIVE_CONNECTIONS:
+                continue
+            now = time.time()
+            summary = [
+                f"{cid}: {c['method']} /{c['path']} [status={c['status']}, age={now - c['start_time']:.1f}s, ip={c['client_ip']}]"
+                for cid, c in list(ACTIVE_CONNECTIONS.items())
+            ]
+            count = len(summary)
+        logger.warning(f"[INGRESS WATCHDOG] {count} active in-flight connection(s):\n  " + "\n  ".join(summary))
+
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -1153,6 +1264,19 @@ HOP_BY_HOP_HEADERS = {
 @app.get("")
 async def root_proxy_handler(request: Request):
     return await reverse_proxy_handler(request, "")
+
+@app.get("/api/system/logs", include_in_schema=False)
+async def get_system_logs(lines: int = 500):
+    """Return tail lines of the persistent system log file in attached storage."""
+    if not os.path.exists(PERSISTENT_LOG_FILE):
+        return Response("Log file not found", status_code=404)
+    try:
+        with open(PERSISTENT_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+            content = f.readlines()
+            tail = content[-lines:] if len(content) > lines else content
+            return Response("".join(tail), media_type="text/plain")
+    except Exception as exc:
+        return Response(f"Error reading log file: {exc}", status_code=500)
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], include_in_schema=False)
 async def reverse_proxy_handler(request: Request, path: str):
@@ -1181,6 +1305,7 @@ async def reverse_proxy_handler(request: Request, path: str):
     req_headers["x-forwarded-proto"] = request.url.scheme
     req_headers["x-forwarded-host"] = request.headers.get("host", f"0.0.0.0:{PUBLIC_PORT}")
 
+    conn_id = register_active_conn(path, request.method, client_ip)
     req_cancelled = asyncio.Event()
     upstream_resp = None
     disconnect_task = None
@@ -1189,7 +1314,7 @@ async def reverse_proxy_handler(request: Request, path: str):
         try:
             while not req_cancelled.is_set():
                 if await request.is_disconnected():
-                    logger.info(f"Client disconnected for /{path}; cancelling upstream request.")
+                    logger.info(f"[INGRESS] Client disconnected for /{path} ({conn_id}); cancelling upstream request.")
                     req_cancelled.set()
                     break
                 await asyncio.sleep(0.5)
@@ -1203,8 +1328,9 @@ async def reverse_proxy_handler(request: Request, path: str):
             req_headers["content-length"] = str(len(req_body))
 
         if await request.is_disconnected():
-            logger.info(f"Client disconnected before sending /{path}")
+            logger.info(f"[INGRESS] Client disconnected before sending /{path} ({conn_id})")
             req_cancelled.set()
+            unregister_active_conn(conn_id, "pre_send_disconnect")
             return Response("Client disconnected", status_code=499)
 
         disconnect_task = asyncio.create_task(watch_disconnect())
@@ -1216,12 +1342,30 @@ async def reverse_proxy_handler(request: Request, path: str):
             content=req_body,
         )
 
-        upstream_resp = await http_client.send(upstream_req, stream=True)
+        send_task = asyncio.create_task(http_client.send(upstream_req, stream=True))
+        disconnect_waiter = asyncio.create_task(req_cancelled.wait())
+
+        done, pending = await asyncio.wait(
+            [send_task, disconnect_waiter],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for p in pending:
+            p.cancel()
+
+        if send_task in done:
+            upstream_resp = send_task.result()
+            update_active_conn(conn_id, f"headers_received_{upstream_resp.status_code}")
+        else:
+            logger.info(f"[INGRESS] Client disconnected while waiting for upstream response headers for /{path} ({conn_id})")
+            unregister_active_conn(conn_id, "header_wait_disconnect")
+            return Response("Client disconnected", status_code=499)
 
         if req_cancelled.is_set() or await request.is_disconnected():
-            logger.info(f"Client disconnected while upstream request was being sent for /{path}")
+            logger.info(f"[INGRESS] Client disconnected while upstream request was being sent for /{path} ({conn_id})")
             req_cancelled.set()
             await upstream_resp.aclose()
+            unregister_active_conn(conn_id, "post_send_disconnect")
             return Response("Client disconnected", status_code=499)
 
         resp_headers = dict(upstream_resp.headers)
@@ -1242,19 +1386,23 @@ async def reverse_proxy_handler(request: Request, path: str):
             resp_headers["cache-control"] = "no-cache"
             resp_headers["x-accel-buffering"] = "no"
 
+        update_active_conn(conn_id, "streaming" if is_sse else "transferring")
+
         async def stream_body():
             try:
                 async for chunk in upstream_resp.aiter_raw():
                     if req_cancelled.is_set() or await request.is_disconnected():
-                        logger.info(f"Client disconnected during streaming for /{path}; closing upstream connection.")
+                        logger.info(f"[INGRESS] Client disconnected during streaming for /{path} ({conn_id}); closing upstream connection.")
                         req_cancelled.set()
                         break
                     yield chunk
             except Exception as e:
-                logger.debug(f"Stream proxy closed for /{path}: {e}")
+                logger.debug(f"[INGRESS] Stream proxy closed for /{path} ({conn_id}): {e}")
             finally:
                 req_cancelled.set()
                 await upstream_resp.aclose()
+                status_note = "client_cancelled" if req_cancelled.is_set() else f"completed_{upstream_resp.status_code}"
+                unregister_active_conn(conn_id, status_note)
 
         return StreamingResponse(
             stream_body(),
@@ -1263,12 +1411,14 @@ async def reverse_proxy_handler(request: Request, path: str):
         )
     except httpx.ConnectError:
         req_cancelled.set()
+        unregister_active_conn(conn_id, "connect_error")
         return Response("Internal GPT-Load engine unavailable or starting up.", status_code=503)
     except Exception as exc:
         req_cancelled.set()
         if upstream_resp is not None:
             await upstream_resp.aclose()
-        logger.error(f"Ingress proxy error for /{path}: {exc}")
+        logger.error(f"[INGRESS] Ingress proxy error for /{path} ({conn_id}): {exc}")
+        unregister_active_conn(conn_id, f"error: {exc}")
         return Response(f"Proxy error: {exc}", status_code=502)
     finally:
         if disconnect_task is not None and not disconnect_task.done():
@@ -1316,6 +1466,10 @@ if __name__ == "__main__":
     github_thread = threading.Thread(target=background_github_sync_poller, daemon=True)
     github_thread.start()
 
+    # 7. Start background connection watchdog for ingress proxy
+    watchdog_thread = threading.Thread(target=background_connection_watchdog, daemon=True)
+    watchdog_thread.start()
+
     # Initial check on PyPI for von-sdk
     check_pypi_for_updates()
 
@@ -1327,7 +1481,7 @@ if __name__ == "__main__":
             app,
             host="0.0.0.0",
             port=PUBLIC_PORT,
-            log_level="warning",
+            log_level="info",
             access_log=False,
         )
     finally:
