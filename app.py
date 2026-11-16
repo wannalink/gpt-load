@@ -1383,19 +1383,27 @@ async def reverse_proxy_handler(request: Request, path: str):
             pass
 
     try:
+        disconnect_task = asyncio.create_task(watch_disconnect())
+
         req_body = None
         if request.method in ("POST", "PUT", "PATCH"):
-            req_body = await request.body()
-            req_headers["content-length"] = str(len(req_body))
+            try:
+                read_timeout = float(os.getenv("READ_TIMEOUT", 60))
+                req_body = await asyncio.wait_for(request.body(), timeout=read_timeout)
+                req_headers["content-length"] = str(len(req_body))
+            except asyncio.TimeoutError:
+                if conn_id:
+                    logger.warning(f"[INGRESS] Client body read timeout for /{path} ({conn_id})")
+                req_cancelled.set()
+                unregister_active_conn(conn_id, "body_read_timeout")
+                return Response("Request body timeout", status_code=408)
 
-        if await request.is_disconnected():
+        if req_cancelled.is_set() or await request.is_disconnected():
             if conn_id:
                 logger.info(f"[INGRESS] Client disconnected before sending /{path} ({conn_id})")
             req_cancelled.set()
             unregister_active_conn(conn_id, "pre_send_disconnect")
             return Response("Client disconnected", status_code=499)
-
-        disconnect_task = asyncio.create_task(watch_disconnect())
 
         upstream_req = http_client.build_request(
             method=request.method,
