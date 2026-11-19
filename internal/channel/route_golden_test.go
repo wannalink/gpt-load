@@ -41,7 +41,7 @@ func TestBuiltInRouteGolden(t *testing.T) {
 	}
 
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(got, "\n"))))
-	const wantDigest = "92f766e963d68477fca2abd46df9b2693565fd31f5540ce5c796c0e85c640806"
+	const wantDigest = "a79267114f16ebc39cf613a23bb11b908303de9a905d3e683f5eb770bd61cd81"
 	if digest != wantDigest {
 		t.Fatalf("built-in routes changed: digest = %s, want %s\n%s", digest, wantDigest, strings.Join(got, "\n"))
 	}

@@ -536,7 +536,7 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 	if spec.ClientProtocol == protocol.Rerank {
 		return prepareRerank(spec, resolved, provider, directKey, secrets)
 	}
-	if spec.ClientProtocol == protocol.Decisions {
+	if spec.ClientProtocol == protocol.Decisions || spec.ClientProtocol == protocol.GeminiDecisions {
 		return prepareDecisions(spec, resolved, provider, directKey, secrets)
 	}
 	if spec.ClientProtocol == protocol.AudioSpeech {
@@ -1050,7 +1050,7 @@ func supportedRequestShape(spec execution.AttemptSpec, stream bool) bool {
 		}
 		switch spec.ClientProtocol {
 		case protocol.OpenAICompletions, protocol.OpenAIResponses, protocol.OpenAIEmbeddings, protocol.Rerank, protocol.Decisions,
-			protocol.Anthropic, protocol.Gemini, protocol.GeminiEmbeddings:
+			protocol.Anthropic, protocol.Gemini, protocol.GeminiEmbeddings, protocol.GeminiDecisions:
 			return true
 		default:
 			return false
@@ -1098,6 +1098,8 @@ func supportedRequestShape(spec execution.AttemptSpec, stream bool) bool {
 		return !stream && spec.RouteMode == execution.RouteNative && spec.Operation == execution.OperationRerank && spec.Method == http.MethodPost && spec.Path == "/v1/rerank"
 	case protocol.Decisions:
 		return !stream && spec.RouteMode == execution.RouteNative && spec.Operation == execution.OperationDecisionsCreate && spec.Method == http.MethodPost && spec.Path == "/v1/systemone"
+	case protocol.GeminiDecisions:
+		return !stream && spec.RouteMode == execution.RouteNative && spec.Operation == execution.OperationDecisionsCreate && spec.Method == http.MethodPost && spec.Path == "/v1beta/decisions"
 	case protocol.AudioSpeech:
 		return audioSpeechRequestShape(spec)
 	case protocol.Mistral:
@@ -1491,6 +1493,9 @@ func (r *Runtime) newSDKContext(parent context.Context, spec execution.AttemptSp
 	if spec.Operation == execution.OperationChatCompletion &&
 		r.providerKind(spec) == channel.ProviderDeepSeek &&
 		spec.ClientProtocol == protocol.Anthropic {
+		bifrostContext.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	}
+	if spec.RouteMode == execution.RouteConverted && spec.ChannelID == string(channel.OpenRouter) {
 		bifrostContext.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	}
 	if spec.Operation == execution.OperationProbe &&
