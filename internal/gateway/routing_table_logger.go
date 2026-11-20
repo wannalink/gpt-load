@@ -129,7 +129,10 @@ func computeModelStats(
 
 			// Check model-level high demand / busy endpoint cooldown
 			if view.ModelCooldowns != nil {
-				for _, k := range []string{model, realModels[0], upstreamModelID, requestedModel} {
+				keys := make([]string, 0, len(realModels)+3)
+				keys = append(keys, model, upstreamModelID, requestedModel)
+				keys = append(keys, realModels...)
+				for _, k := range keys {
 					if k != "" {
 						if mUntil, ok := view.ModelCooldowns[k]; ok && mUntil.After(now) {
 							if !hasMinModelCooldown || mUntil.Before(minModelCooldownUntil) {

@@ -1,23 +1,17 @@
 """
-Unified GPT-Load Gateway & Von Decision Server on Hugging Face Spaces (ZeroGPU).
+GPT-Load Gateway on Hugging Face Spaces (ZeroGPU / Gradio).
 
 Architecture:
-- Single Space deployment using Gradio SDK on Hugging Face Spaces with ZeroGPU (NVIDIA RTX Pro 6000 / A100).
-- Von Decision Server: Real ZeroGPU worker executing ModernBERT PyTorch decision inference (@spaces.GPU(duration=15)).
-- Dedicated Local Endpoints for GPT-Load:
-    1. Dedicated loopback listener: http://127.0.0.1:7861/v1 (Jev native paths: /v1/systemone, /v1/models)
-    2. Path-based loopback on port 7860: http://127.0.0.1:7860/von/v1
-    3. Loopback authentication bypass (GPT-Load on 127.0.0.1 does not require API keys; external requests enforce VON_API_KEY).
+- Single Space deployment using Gradio SDK on Hugging Face Spaces with ZeroGPU.
 - GPT-Load AI Gateway: Go process running on 127.0.0.1:3001 serving root /, /v1/*, and /api/*.
 - Hybrid SQLite Persistence: Ephemeral high-speed local container storage synced to persistent HF Storage Bucket (/data).
 - Zero-Quota /healthz: CPU-bound probe for external cron jobs (e.g. cron-job.org) keeping the Space warm 24/7.
-- Direct Root Access: Root / proxies directly to GPT-Load Management Console; Gradio test dashboard at /gradio.
+- Direct Root Access: Root / proxies directly to GPT-Load Management Console; Gradio status dashboard at /gradio.
 """
 
 import asyncio
 import datetime
 import hmac
-import importlib.metadata
 import json
 import logging
 import os
@@ -71,10 +65,6 @@ def detect_space_id() -> Optional[str]:
 
 SPACE_ID = detect_space_id()
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
-VON_API_KEY = os.getenv("VON_API_KEY")
-
-# Ensure CUDA preference for ZeroGPU
-os.environ.setdefault("VON_DEVICE", "cuda")
 
 # Storage paths:
 # HF Storage Bucket is typically mounted as a volume at /data (or HF_STORAGE_DIR)
@@ -135,7 +125,7 @@ GPT_LOAD_PROC: Optional[subprocess.Popen] = None
 SHUTDOWN_EVENT = threading.Event()
 
 # ---------------------------------------------------------------------------
-# 2. ZeroGPU Supervisor & Von Worker Hook
+# 2. ZeroGPU Supervisor Check
 # ---------------------------------------------------------------------------
 try:
     import spaces  # type: ignore
@@ -152,133 +142,8 @@ except (ImportError, AttributeError):
     HAS_ZEROGPU = False
     logger.info("Standard CPU / local environment detected (spaces module absent).")
 
-# Optional boot-time auto-upgrade check for von-sdk from PyPI
-try:
-    req = urllib.request.Request(
-        "https://pypi.org/pypi/von-sdk/json",
-        headers={"User-Agent": "Von-Space-Boot-Checker"}
-    )
-    with urllib.request.urlopen(req, timeout=4) as resp:
-        _pypi_data = json.loads(resp.read().decode())
-        _latest_pypi_ver = _pypi_data.get("info", {}).get("version")
-
-    try:
-        _current_installed = importlib.metadata.version("von-sdk")
-    except Exception:
-        _current_installed = None
-
-    if _latest_pypi_ver and _current_installed != _latest_pypi_ver:
-        logger.info(f"Boot update detected: upgrading von-sdk {_current_installed} -> {_latest_pypi_ver}...")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", "--no-cache-dir", "-U", f"von-sdk=={_latest_pypi_ver}"
-        ])
-        logger.info(f"Successfully upgraded von-sdk to {_latest_pypi_ver} during container boot.")
-except Exception as _boot_err:
-    logger.warning(f"Boot-time von-sdk auto-upgrade check skipped: {_boot_err}")
-
-try:
-    from von import __version__ as CURRENT_VON_VERSION  # type: ignore
-    from von.engine import VonEngine  # type: ignore
-    from von.types import Question, SystemOneResponse  # type: ignore
-    HAS_VON = True
-    logger.info(f"Loaded von-sdk version: {CURRENT_VON_VERSION}")
-except ImportError:
-    CURRENT_VON_VERSION = "absent"
-    VonEngine = None  # type: ignore
-    Question = dict  # type: ignore
-    SystemOneResponse = dict  # type: ignore
-    HAS_VON = False
-    logger.warning("von-sdk is not installed; decision classification endpoints will be disabled.")
-
-# Inference worker function (decorated with spaces.GPU on ZeroGPU)
-def execute_inference_gpu(state: Any, questions: Dict[str, Any], model: str) -> Dict[str, Any]:
-    """Execute Von System One forward pass on dynamically assigned ZeroGPU slice."""
-    if not HAS_VON or VonEngine is None:
-        return {"error": "von-sdk is not installed"}
-    eng = VonEngine.get_instance()
-    resp = eng.evaluate(state=state, questions=questions, model=model)
-    if hasattr(resp, "model_dump"):
-        return resp.model_dump()
-    elif hasattr(resp, "dict"):
-        return resp.dict()
-    return resp  # type: ignore
-
-if HAS_ZEROGPU and spaces is not None:
-    execute_inference_gpu = spaces.GPU(duration=15)(execute_inference_gpu)
-
-# Warm up model weights during boot while CUDA is active
-if HAS_VON and VonEngine is not None:
-    try:
-        engine = VonEngine.get_instance()
-        if hasattr(engine, "backend") and hasattr(engine.backend, "_get_model"):
-            engine.backend._get_model()
-            logger.info("Von decision model weights verified and loaded into backend.")
-    except Exception as exc:
-        logger.warning(f"Von model warm-up deferred to first request: {exc}")
-
 # ---------------------------------------------------------------------------
-# 3. Von Version Check & Space Auto-Restart
-# ---------------------------------------------------------------------------
-UPDATE_STATUS: Dict[str, Any] = {
-    "current_version": CURRENT_VON_VERSION,
-    "latest_version": CURRENT_VON_VERSION,
-    "update_available": False,
-    "last_checked": 0,
-}
-
-def check_pypi_for_updates() -> dict:
-    """Check PyPI for the newest published von-sdk release."""
-    global UPDATE_STATUS
-    try:
-        req = urllib.request.Request(
-            "https://pypi.org/pypi/von-sdk/json",
-            headers={"User-Agent": "Von-Space-Watcher"}
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            latest_version = data.get("info", {}).get("version", CURRENT_VON_VERSION)
-            from packaging import version  # type: ignore
-            is_newer = version.parse(latest_version) > version.parse(CURRENT_VON_VERSION)
-            UPDATE_STATUS.update({
-                "latest_version": latest_version,
-                "update_available": is_newer,
-                "last_checked": time.time(),
-            })
-            if is_newer:
-                logger.info(f"New von-sdk release on PyPI: {latest_version} (Current: {CURRENT_VON_VERSION})")
-    except Exception as e:
-        logger.warning(f"Failed to check PyPI for updates: {e}")
-    return UPDATE_STATUS
-
-def trigger_space_factory_restart() -> bool:
-    """Trigger a clean Space factory reboot via huggingface_hub API."""
-    if not SPACE_ID or not HF_TOKEN:
-        logger.warning("Auto-restart skipped: SPACE_ID or HF_TOKEN not configured.")
-        return False
-    try:
-        from huggingface_hub import HfApi  # type: ignore
-        api = HfApi(token=HF_TOKEN)
-        logger.info(f"Triggering factory reboot for Space: {SPACE_ID}...")
-        api.restart_space(repo_id=SPACE_ID, factory_reboot=True)
-        return True
-    except Exception as exc:
-        logger.error(f"Failed to trigger factory reboot: {exc}")
-        return False
-
-def background_update_poller(interval_seconds: int = 3600):
-    """Background daemon checking for new versions every hour."""
-    while not SHUTDOWN_EVENT.is_set():
-        SHUTDOWN_EVENT.wait(interval_seconds)
-        if SHUTDOWN_EVENT.is_set():
-            break
-        status = check_pypi_for_updates()
-        if status.get("update_available") and HF_TOKEN and SPACE_ID:
-            logger.info("Automated update triggered: restarting Space with factory_reboot...")
-            trigger_space_factory_restart()
-            break
-
-# ---------------------------------------------------------------------------
-# 4. SQLite Storage Bucket Hydration & Atomic Persistence Sync
+# 3. SQLite Storage Bucket Hydration & Atomic Persistence Sync
 # ---------------------------------------------------------------------------
 def hydrate_database_from_bucket():
     """Copy persistent SQLite database from mounted Storage Bucket to local working directory on boot."""
@@ -659,9 +524,6 @@ def start_gpt_load_process() -> Optional[subprocess.Popen]:
     env["CLIENT_IP_HEADER"] = "X-Forwarded-For"
     env["TRUSTED_PROXIES"] = "127.0.0.1"
 
-    # Pass local Von endpoints into environment for convenience
-    env["VON_BASE_URL"] = f"http://127.0.0.1:{PUBLIC_PORT}/von/v1"
-
     # Remove Fly.io 256MB memory constraints to leverage 16GB host RAM
     env.pop("GOMEMLIMIT", None)
     if env.get("GOGC") == "60":
@@ -756,28 +618,14 @@ def stop_gpt_load_process():
 # 6. FastAPI Router & Ingress Reverse-Proxy
 # ---------------------------------------------------------------------------
 from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect  # type: ignore
-from pydantic import BaseModel, Field, field_validator  # type: ignore
 from starlette.responses import PlainTextResponse, StreamingResponse  # type: ignore
 import httpx  # type: ignore
 import websockets  # type: ignore
 
-app = FastAPI(title="GPT-Load & Von Unified Gateway", docs_url=None, redoc_url=None)
+app = FastAPI(title="GPT-Load Gateway", docs_url=None, redoc_url=None)
 http_client: Optional[httpx.AsyncClient] = None
 
-class SystemOneRequest(BaseModel):
-    model: str = Field(default="von-latest")
-    state: Any = Field(..., description="State object, string, or array to evaluate")
-    questions: Dict[str, Dict[str, Any]] = Field(..., description="Dict of question definitions")
-
-    @field_validator("questions")
-    @classmethod
-    def _validate_questions(cls, v):
-        if not v:
-            raise ValueError("questions must contain at least one entry")
-        return v
-
 AUTH_KEY = os.getenv("AUTH_KEY")
-VON_API_KEY = os.getenv("VON_API_KEY")
 
 def is_trusted_local_client(request: Request) -> bool:
     """
@@ -788,26 +636,19 @@ def is_trusted_local_client(request: Request) -> bool:
     xff = request.headers.get("x-forwarded-for")
     return client_host in ("127.0.0.1", "::1", "localhost") and not xff
 
-def verify_von_token(request: Request, authorization: Optional[str]):
-    """
-    Verify API key for external calls.
-    Internal loopback calls directly from GPT-Load bypass authentication automatically.
-    External calls must provide either VON_API_KEY or AUTH_KEY to prevent unauthorized ZeroGPU quota drainage.
-    """
+def verify_admin_token(request: Request, authorization: Optional[str]):
+    """Verify AUTH_KEY Bearer token for external administrative requests."""
     if is_trusted_local_client(request):
         return  # Trusted internal loopback
 
-    valid_keys = [k for k in (VON_API_KEY, AUTH_KEY) if k]
-    if not valid_keys:
-        # If no key is set, deny external access by default to prevent unauthorized GPU quota drainage
-        raise HTTPException(status_code=401, detail="Access denied: AUTH_KEY or VON_API_KEY must be configured in Space secrets.")
+    if not AUTH_KEY:
+        raise HTTPException(status_code=401, detail="Access denied: AUTH_KEY must be configured in Space secrets.")
 
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Bearer token for Von API")
+        raise HTTPException(status_code=401, detail="Missing or invalid Bearer token")
 
     token = authorization.split("Bearer ", 1)[1].strip()
-    is_valid = any(hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in valid_keys)
-    if not is_valid:
+    if not hmac.compare_digest(token.encode("utf-8"), AUTH_KEY.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Unauthorized: invalid API key")
 
 @app.on_event("startup")
@@ -838,7 +679,7 @@ def healthz_probe():
 @app.get("/health")
 @app.get("/status")
 def health_and_status():
-    """Detailed operational status for Von Decision Engine and GPT-Load Gateway."""
+    """Detailed operational status for GPT-Load Gateway."""
     uptime = int(time.time() - START_TIME)
     last_sync_iso = (
         datetime.datetime.fromtimestamp(LAST_DB_SYNC_TIME, datetime.timezone.utc).isoformat()
@@ -848,20 +689,9 @@ def health_and_status():
     gpt_load_alive = bool(GPT_LOAD_PROC and GPT_LOAD_PROC.poll() is None)
     return {
         "status": "online" if gpt_load_alive else "degraded",
-        "service": "gpt-load-von-gateway",
+        "service": "gpt-load-gateway",
         "zerogpu_enabled": HAS_ZEROGPU,
         "env_keys": [k for k in os.environ.keys() if "KEY" not in k and "TOKEN" not in k],
-        "von": {
-            "version": CURRENT_VON_VERSION,
-            "installed": HAS_VON,
-            "device": os.environ.get("VON_DEVICE", "cuda"),
-            "update_status": UPDATE_STATUS,
-            "local_endpoints": {
-                "local_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
-                "decision_path": "/systemone",
-                "models_path": "/models",
-            },
-        },
         "gpt_load": {
             "process_alive": gpt_load_alive,
             "internal_port": INTERNAL_PORT,
@@ -877,78 +707,9 @@ def health_and_status():
 @app.post("/status/sync")
 def trigger_db_sync(request: Request, authorization: Optional[str] = Header(None)):
     """Manually trigger immediate working database sync to the Storage Bucket."""
-    verify_von_token(request, authorization)
+    verify_admin_token(request, authorization)
     success = sync_db_to_persistent_storage()
     return {"success": success, "status": LAST_DB_SYNC_STATUS}
-
-# --- Von Informational / Configuration Endpoint ---
-@app.get("/von/info")
-@app.get("/von/v1/info")
-def von_configuration_info():
-    """Endpoint details for configuring GPT-Load Jev channel locally."""
-    return {
-        "service": "von-decision-engine",
-        "version": CURRENT_VON_VERSION,
-        "zerogpu_enabled": HAS_ZEROGPU,
-        "local_endpoints": {
-            "local_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
-            "decision_path": "/systemone",
-            "models_path": "/models",
-        },
-        "gpt_load_channel_setup": {
-            "channel_type": "jev",
-            "recommended_base_url": f"http://127.0.0.1:{PUBLIC_PORT}/von/v1",
-            "upstream_model": "von-latest",
-            "auth_note": "Authentication automatically bypassed for local container requests.",
-        },
-        "models": ["von-latest", "von-1.2.0", "jev-latest"],
-    }
-
-# --- Von Decision Model Catalog ---
-@app.get("/von/v1/models")
-@app.get("/von/models")
-@app.get("/v1/decision-models")
-def list_von_models():
-    """Catalog of available decision models for GPT-Load channels and external clients."""
-    models = [
-        {"name": "von-latest", "description": "Latest Von System One decision model", "version": CURRENT_VON_VERSION},
-        {"name": "von-1.2.0", "description": "Von 1.2 stable (order-invariant option scoring)"},
-        {"name": "jev-latest", "description": "TypeSafe Jev compatibility alias"},
-    ]
-    data = [{"id": m["name"], "object": "model", "owned_by": "von"} for m in models]
-    return {"models": models, "object": "list", "data": data}
-
-# --- Von System One Classification Endpoint (ZeroGPU Accelerated) ---
-@app.post("/v1/systemone")
-@app.post("/von/v1/systemone")
-@app.post("/von/systemone")
-async def systemone_classification_endpoint(
-    req: SystemOneRequest,
-    request: Request,
-    authorization: Optional[str] = Header(None)
-):
-    """
-    Evaluate decision primitives using the ZeroGPU worker.
-    Called directly by external clients or by GPT-Load's Jev channel for Automatic Models.
-    Local requests from 127.0.0.1 bypass authentication automatically.
-    """
-    verify_von_token(request, authorization)
-    t0 = time.perf_counter()
-    try:
-        response_dict = await asyncio.to_thread(
-            execute_inference_gpu,
-            state=req.state,
-            questions=dict(req.questions),
-            model=req.model,
-        )
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        is_local = is_trusted_local_client(request)
-        prefix = "[VON-LOCAL]" if is_local else "[VON-EXTERNAL]"
-        logger.info(f"{prefix} Decision '{req.model}' executed on ZeroGPU in {elapsed_ms:.2f}ms")
-        return response_dict
-    except Exception as exc:
-        logger.error(f"Inference error in /v1/systemone: {exc}")
-        raise HTTPException(status_code=422, detail=str(exc))
 
 # --- GitHub Synchronization & Webhook Endpoint ---
 def detect_github_repo_url() -> Optional[str]:
@@ -1154,83 +915,23 @@ async def websocket_proxy_endpoint(client_ws: WebSocket, path: str):
 # ---------------------------------------------------------------------------
 import gradio as gr  # type: ignore
 
-def test_decision_ui(prompt_text: str, api_key_input: str = ""):
-    """Test function for the interactive Gradio demo tab with authentication check."""
-    if not prompt_text.strip():
-        return "Please enter a prompt to classify."
-
-    valid_keys = [k for k in (VON_API_KEY, AUTH_KEY) if k]
-    if valid_keys:
-        token = (api_key_input or "").strip()
-        if token.startswith("Bearer "):
-            token = token.split("Bearer ", 1)[1].strip()
-        is_valid = any(hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in valid_keys)
-        if not is_valid:
-            return {"error": "Unauthorized: Valid AUTH_KEY or VON_API_KEY required to execute ZeroGPU inference."}
-    try:
-        q = {
-            "complexity": {
-                "type": "choice",
-                "instructions": "Classify the computational reasoning complexity required for this prompt.",
-                "criteria": {
-                    "heavy_reasoning": "Complex coding, algorithm design, system architecture, multi-step math, debugging",
-                    "light_conversational": "General chat, short Q&A, simple formatting, translation, greeting",
-                },
-            }
-        }
-        res = execute_inference_gpu(state=prompt_text, questions=q, model="von-latest")
-        answers = res.get("answers", {}) if isinstance(res, dict) else getattr(res, "answers", {})
-        choice_ans = answers.get("complexity", {})
-        if isinstance(choice_ans, dict):
-            return {
-                "selected_route": choice_ans.get("choice", "unknown"),
-                "confidence": choice_ans.get("confidence", 0.0),
-                "probabilities": choice_ans.get("probabilities", {}),
-            }
-        return {
-            "selected_route": getattr(choice_ans, "choice", "unknown"),
-            "confidence": getattr(choice_ans, "confidence", 0.0),
-            "probabilities": getattr(choice_ans, "probabilities", {}),
-        }
-    except Exception as e:
-        return f"Error evaluating: {e}"
-
-with gr.Blocks(title="Von Decision Server") as demo:
+with gr.Blocks(title="GPT-Load Gateway") as demo:
     gr.Markdown(f"""
-    # 🧠 Von Decision Server & ⚡ GPT-Load Gateway
-    
+    # ⚡ GPT-Load Gateway
+
     <div style="display: flex; gap: 10px; margin-bottom: 20px;">
         <span style="background-color: #22c55e20; color: #16a34a; padding: 4px 12px; border-radius: 9999px; font-weight: bold; border: 1px solid #16a34a40;">
-            ● Status: Online (ZeroGPU)
-        </span>
-        <span style="background-color: #3b82f620; color: #2563eb; padding: 4px 12px; border-radius: 9999px; font-weight: bold; border: 1px solid #2563eb40;">
-            Von Version: {CURRENT_VON_VERSION}
+            ● Status: Online ({'ZeroGPU' if HAS_ZEROGPU else 'CPU'})
         </span>
     </div>
 
-    This Space co-locates **Von System One Decision Classification** with **GPT-Load Multi-Channel Gateway**.
+    This Hugging Face Space hosts the **GPT-Load Multi-Channel AI Gateway** with persistent SQLite storage bucket sync.
 
     ### ⚡ Active Endpoints
     - **GPT-Load Web Console**: `GET /` *(Native Vue 3 / Vite Management Dashboard)*
-    - **Local Von Endpoint**: `http://127.0.0.1:{PUBLIC_PORT}/von/v1` *(Zero Auth Loopback)*
-    - **Von Decision API**: `POST /von/v1/systemone` & `POST /v1/systemone` *(Sub-25ms ZeroGPU ModernBERT)*
-    - **Decision Catalog**: `GET /von/v1/models` *(TypeSafe / OpenAI compatible)*
     - **Keep-Alive Probe**: `GET /healthz` *(Zero GPU quota consumed, for external cron)*
     - **System Diagnostics**: `GET /health` & `GET /status`
-
-    ### 🔄 Auto-Update Status
-    - **Installed Von Version**: `{CURRENT_VON_VERSION}`
-    - **Latest on PyPI**: `{UPDATE_STATUS.get('latest_version', CURRENT_VON_VERSION)}`
-    - **Update Available**: `{'Yes' if UPDATE_STATUS.get('update_available') else 'Up to date'}`
     """)
-
-    with gr.Accordion("Interactive Quick-Test (Von Decision Classification)", open=False):
-        gr.Markdown("Test Von decision classification live on ZeroGPU (requires AUTH_KEY or VON_API_KEY):")
-        key_box = gr.Textbox(label="API Key / Auth Key", placeholder="Enter AUTH_KEY or VON_API_KEY...", type="password")
-        input_box = gr.Textbox(label="Input Prompt / State", placeholder="e.g. Write a distributed Raft consensus implementation in Go...")
-        test_btn = gr.Button("Evaluate Decision", variant="primary")
-        output_json = gr.JSON(label="Decision Result")
-        test_btn.click(fn=test_decision_ui, inputs=[input_box, key_box], outputs=[output_json])
 
 # Mount Gradio Blocks at /gradio so root / remains dedicated to GPT-Load Web UI
 app = gr.mount_gradio_app(app, demo, path="/gradio")
@@ -1513,12 +1214,11 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
 
     logger.info("==================================================")
-    logger.info("Initializing Unified GPT-Load & Von Space")
+    logger.info("Initializing GPT-Load Gateway Space")
     logger.info(f"Public Port: {PUBLIC_PORT} • Internal Port: {INTERNAL_PORT}")
     logger.info(f"Persistent Storage: {HF_STORAGE_DIR}")
     logger.info(f"Working Data Dir: {LOCAL_DATA_DIR}")
     logger.info(f"ZeroGPU Available: {HAS_ZEROGPU}")
-    logger.info(f"Von Engine Available: {HAS_VON} (v{CURRENT_VON_VERSION})")
     logger.info("==================================================")
 
     # 1. Hydrate working database from persistent bucket
@@ -1532,22 +1232,15 @@ if __name__ == "__main__":
     sync_thread = threading.Thread(target=background_db_sync_poller, daemon=True)
     sync_thread.start()
 
-    # 5. Start background PyPI update poller for von-sdk
-    update_thread = threading.Thread(target=background_update_poller, daemon=True)
-    update_thread.start()
-
-    # 6. Start background GitHub repository sync daemon
+    # 5. Start background GitHub repository sync daemon
     github_thread = threading.Thread(target=background_github_sync_poller, daemon=True)
     github_thread.start()
 
-    # 7. Start background connection watchdog for ingress proxy
+    # 6. Start background connection watchdog for ingress proxy
     watchdog_thread = threading.Thread(target=background_connection_watchdog, daemon=True)
     watchdog_thread.start()
 
-    # Initial check on PyPI for von-sdk
-    check_pypi_for_updates()
-
-    # 6. Launch FastAPI Ingress on public port (7860)
+    # 7. Launch FastAPI Ingress on public port (7860)
     import uvicorn  # type: ignore
 
     try:

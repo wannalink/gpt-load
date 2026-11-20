@@ -42,14 +42,22 @@ var (
 	reasonAdvisorModelUnavailable       = reason{Status: http.StatusBadRequest, Code: "advisor_model_unavailable", Message: "The advisor model must be provided by the selected group and allowed by the access key."}
 	reasonNoCandidate                   = reason{Status: http.StatusServiceUnavailable, Code: "no_available_candidate", Message: "No available upstream candidate."}
 	reasonUpstreamRateLimited           = reason{Status: http.StatusTooManyRequests, Code: "upstream_rate_limited", Message: "Upstream rate limit exceeded."}
-	reasonUpstreamHighDemand            = reason{Status: http.StatusServiceUnavailable, Code: "upstream_high_demand", Message: "The upstream model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."}
 	reasonUpstreamConnect               = reason{Status: http.StatusBadGateway, Code: "upstream_connect_failed", Message: "Could not connect to an upstream service."}
 	reasonUpstreamTimeout               = reason{Status: http.StatusGatewayTimeout, Code: "upstream_timeout", Message: "Upstream request timed out."}
 	reasonUpstreamProtocol              = reason{Status: http.StatusBadGateway, Code: "upstream_protocol_error", Message: "Upstream returned an unsupported response."}
 	reasonResponseRedactionFailed       = reason{Status: http.StatusBadGateway, Code: "response_redaction_failed", Message: "Response content could not be restored safely."}
 	reasonProtocolConversionUnsupported = reason{Status: http.StatusUnprocessableEntity, Code: "protocol_conversion_unsupported", Message: "No upstream target could preserve or convert the request."}
 	reasonRequestTooLarge               = reason{Status: http.StatusRequestEntityTooLarge, Code: "request_too_large", Message: "Request body is too large."}
-	reasonUnsupportedContentEncoding    = reason{
+	// reasonEncryptedContentRecoveryExhausted renders after the one-time
+	// same-credential replay with the rejected encrypted state stripped still
+	// failed. Retrying again cannot help: the encrypted continuation context
+	// does not change between attempts.
+	reasonEncryptedContentRecoveryExhausted = reason{
+		Status:  http.StatusBadRequest,
+		Code:    "encrypted_content_recovery_exhausted",
+		Message: "Upstream rejected the continuation context after the gateway rebuilt inline history and retried once. Resend with readable conversation history or start a new conversation.",
+	}
+	reasonUnsupportedContentEncoding = reason{
 		Status:  http.StatusUnsupportedMediaType,
 		Code:    "unsupported_content_encoding",
 		Message: "Unsupported Content-Encoding.",
@@ -228,42 +236,5 @@ func (handler *Handler) completeConfigurationChanged(
 }
 
 func (handler *Handler) writeReason(context *gin.Context, value reason) error {
-	headers := http.Header{"Content-Type": {"application/json; charset=utf-8"}}
-	if value.Status == http.StatusServiceUnavailable || value.Status == http.StatusTooManyRequests {
-		headers.Set("Retry-After", "30")
-	}
-
-	body, err := json.Marshal(struct {
-		Error struct {
-			Message string  `json:"message"`
-			Type    string  `json:"type"`
-			Param   *string `json:"param"`
-			Code    string  `json:"code"`
-		} `json:"error"`
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}{
-		Error: struct {
-			Message string  `json:"message"`
-			Type    string  `json:"type"`
-			Param   *string `json:"param"`
-			Code    string  `json:"code"`
-		}{
-			Message: value.Message,
-			Type:    "server_error",
-			Param:   nil,
-			Code:    value.Code,
-		},
-		Code:    value.Code,
-		Message: value.Message,
-	})
-	if err != nil {
-		return err
-	}
-	return handler.writeBufferedResponse(
-		context,
-		value.Status,
-		headers,
-		body,
-	)
+	return handler.writeForkReasonResponse(context, value)
 }

@@ -214,7 +214,7 @@ func TestAutoModelSettingsAcceptSyntheticModelTarget(t *testing.T) {
 		Models: optionalGroupModels{
 			Set: true,
 			Values: []GroupModel{
-				{ID: "von-latest", Alias: "von-latest", AliasEnabled: true},
+				{ID: "jev-router", Alias: "jev-router", AliasEnabled: true},
 			},
 		},
 	})
@@ -225,7 +225,7 @@ func TestAutoModelSettingsAcceptSyntheticModelTarget(t *testing.T) {
 	// 3. Save auto_model settings targeting the synthetic model
 	autoModelJSON := `{
 		"enabled": true,
-		"model": "von-latest",
+		"model": "jev-router",
 		"timeout_seconds": 2,
 		"models": [
 			{

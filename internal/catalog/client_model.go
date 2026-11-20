@@ -178,8 +178,8 @@ func resolveDefaultReasoningLevel(levels []string, preferred string) string {
 	if slices.Contains(levels, preferred) {
 		return preferred
 	}
-	if slices.Contains(levels, "high") {
-		return "high"
+	if level, ok := preferForkReasoningLevel(levels); ok {
+		return level
 	}
 	if slices.Contains(levels, "medium") {
 		return "medium"

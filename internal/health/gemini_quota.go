@@ -97,6 +97,18 @@ func parseGeminiRetryDuration(text string) (time.Duration, bool) {
 	return d, true
 }
 
+// IsGeminiInputTokenLimitMarkers reports whether lowercased error markers indicate
+// an explicit Gemini input-token-limit rejection (distinct from per-minute TPM limits).
+func IsGeminiInputTokenLimitMarkers(markers string) bool {
+	// generate_content_free_tier_input_token_count is an explicit terminal rejection for the request
+	// (input token quota exhausted/exceeded). Google's error description explicitly includes
+	// the phrase "input tokens per minute limit exceeded on Free Tier", so it must not be
+	// bypassed by the "per minute" or "tpm" checks intended for generic TPM rate limits.
+	return strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
+		((strings.Contains(markers, "input_token_count") || strings.Contains(markers, "token count exceeds")) &&
+			!strings.Contains(markers, "per minute") && !strings.Contains(markers, "tpm"))
+}
+
 // geminiFreeTierQuotaDecision inspects the execution attempt for Gemini's free tier quota error
 // ("Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit:")
 // and returns a Decision forcing a model-specific cooldown (EffectCooldownModel) for the specific key-model pair
@@ -112,13 +124,7 @@ func geminiFreeTierQuotaDecision(attempt ExecutionAttempt) (Decision, bool) {
 		attempt.Evidence.Summary,
 	}, " "))
 
-	// generate_content_free_tier_input_token_count is an explicit terminal rejection for the request
-	// (input token quota exhausted/exceeded). Google's error description explicitly includes
-	// the phrase "input tokens per minute limit exceeded on Free Tier", so it must not be
-	// bypassed by the "per minute" or "tpm" checks intended for generic TPM rate limits.
-	if strings.Contains(markers, "generate_content_free_tier_input_token_count") ||
-		((strings.Contains(markers, "input_token_count") || strings.Contains(markers, "token count exceeds")) &&
-			!strings.Contains(markers, "per minute") && !strings.Contains(markers, "tpm")) {
+	if IsGeminiInputTokenLimitMarkers(markers) {
 		return decision(
 			FailureCategoryClientError,
 			originForEvidence(attempt.Evidence),

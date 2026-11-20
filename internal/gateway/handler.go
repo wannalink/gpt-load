@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"gpt-load/internal/automodel"
 	"gpt-load/internal/catalog"
 	"gpt-load/internal/channel"
+	"gpt-load/internal/codexrecovery"
 	"gpt-load/internal/connection"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
@@ -125,6 +125,7 @@ type Handler struct {
 	routeNotFoundEvents *utils.RateLimitedEventCounter
 	lifecycle           *httplifecycle.Coordinator
 	affinityCache       *affinity.Cache
+	invalidLineage      *codexrecovery.InvalidLineage
 	responseBindings    *state.ResponseBindings
 	websocketLimits     websocketLimits
 	websocketBudget     websocketBudget
@@ -182,18 +183,15 @@ func NewHandler(
 	manager.SetSchedulingState(registry.SchedulingState())
 	channels := channel.NewRegistry()
 	subscriptions, _ := subscriptionruntime.NewRuntime(channels, subscriptionproviders.Implementations()...)
-	bufferStreams := true
-	if val := os.Getenv("GPT_LOAD_BUFFER_STREAMS"); val == "false" || val == "0" {
-		bufferStreams = false
-	}
 	handler := &Handler{
 		manager: manager, channels: channels, subscriptions: subscriptions, registry: registry, encryption: encryptionService,
 		forwarder: forwarder, dialects: dialects, stats: stats, mutations: mutations,
 		limiter: limiter, requestLogSink: requestLogSink, priceTables: priceTables,
 		affinityCache:    affinity.NewCache(),
+		invalidLineage:   codexrecovery.NewInvalidLineage(),
 		responseBindings: state.NewResponseBindings(),
 		websocketLimits:  defaultWebsocketLimits(),
-		bufferStreams:    bufferStreams,
+		bufferStreams:    streamBufferingEnabledFromEnv(),
 		liveSessions:     newLiveSessions(),
 		newRequestID:     newRequestID,
 		requestNow:       time.Now,
@@ -307,14 +305,9 @@ func (handler *Handler) applyGroupDecisionEffect(
 	attemptNow time.Time,
 	model string,
 ) {
-	if decision.Effect == health.EffectCooldownModel && decision.RuleID == "gemini.high_demand_model_cooldown" {
-		handler.registry.SetGroupModelCooldown(group.ID, model, decision.CooldownUntil, attemptNow)
-		utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
-			logrus.Fields{"event": "model_cooldown", "group_id": group.ID, "model": model,
-				"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown (high demand)")
+	if handler.applyForkGroupDecisionEffect(group, decision, statusCode, attemptNow, model) {
 		return
 	}
-
 	handler.applyDecisionEffectWithBlacklistPolicy(
 		ref,
 		credentialVersion,
@@ -946,11 +939,7 @@ func (handler *Handler) executeAttempts(
 ) {
 	stream := originalMetadata.Stream
 	operation := originalMetadata.Operation
-	syntheticModelName := externalModel
-	if originalMetadata.Model != nil && *originalMetadata.Model != "" {
-		syntheticModelName = *originalMetadata.Model
-	}
-	isSynthetic := isSyntheticModelRequest(iterator.Snapshot(), syntheticModelName)
+	isSynthetic := isSyntheticModelRequest(iterator.Snapshot(), syntheticModelName(externalModel, originalMetadata))
 	var redactionCipher encryption.RedactionCipher
 	if !snapshot.RequestRedaction.Empty() || redactionBusinessProtocol(selectedDialect.Protocol()) {
 		var err error
@@ -972,6 +961,7 @@ func (handler *Handler) executeAttempts(
 	var lastConversion *deferredAttempt
 	var lastProviderError *deferredAttempt
 	var lastEmptyResponse *deferredAttempt
+	var recoveryRejection *deferredAttempt
 	lastAttemptIndex := -1
 	attemptSequence := 0
 	forwardAttempts := 0
@@ -981,6 +971,12 @@ func (handler *Handler) executeAttempts(
 	}
 	var refreshRetry *credentialRefreshRetry
 	authRefreshReplayUsed := false
+	// encryptedRetry pins one same-credential replay with the rejected
+	// encrypted continuation state stripped. It is used at most once per request
+	// and counts toward the retry budget: the opaque state is account-bound and
+	// does not change between attempts.
+	var encryptedRetry *encryptedContentRecoveryRetry
+	encryptedReplayUsed := false
 	type preparedRequest struct {
 		configuredParameters  []string
 		removedParameterPaths [][]string
@@ -1065,6 +1061,26 @@ func (handler *Handler) executeAttempts(
 		cachedPrepared = &prepared
 		return prepared
 	}
+	replacePreparedBody := func(prepared preparedRequest, body []byte) preparedRequest {
+		prepared.request = withRequestBody(prepared.request, body)
+		prepared.observations = originalMetadata
+		prepared.observationsAvailable = false
+		if metadata, inspectErr := selectedDialect.InspectRequest(prepared.request); inspectErr == nil {
+			prepared.observations = dialect.RequestMetadata{
+				ObserveUsage:     originalMetadata.ObserveUsage,
+				PricingMode:      metadata.PricingMode,
+				UsageDiagnostics: metadata.UsageDiagnostics,
+				Reasoning:        metadata.Reasoning,
+			}
+			prepared.observationsAvailable = true
+		}
+		return prepared
+	}
+	invalidLineageSession := handler.invalidLineageKey(
+		recorder.accessKeyID,
+		selectedDialect.Protocol(),
+		originalMetadata,
+	)
 	decisionContextForSelection := func(selection scheduler.Selection) health.DecisionContext {
 		defaultRateLimitCooldown := fixedCooldown
 		credentialRefreshable := false
@@ -1163,7 +1179,24 @@ func (handler *Handler) executeAttempts(
 		forceCredentialRefresh := false
 		var selection scheduler.Selection
 		var ref state.CredentialRef
-		if refreshRetry != nil {
+		if encryptedRetry != nil {
+			// Replay the same credential with the rejected encrypted state
+			// stripped. Pinning the credential is required: the sanitized
+			// body no longer needs the authoring account, but keeping it
+			// avoids re-routing a continuation turn mid-flight.
+			selection = encryptedRetry.selection
+			currentRef, exists := handler.registry.CredentialRef(selection.CredentialID)
+			if !exists || currentRef.GroupID != selection.GroupID ||
+				currentRef.IdentityGeneration != encryptedRetry.ref.IdentityGeneration {
+				encryptedRetry = nil
+				continue
+			}
+			ref = currentRef
+			if !iterator.ChargeReplay(selection, ref) {
+				encryptedRetry = nil
+				continue
+			}
+		} else if refreshRetry != nil {
 			selection = refreshRetry.selection
 			currentRef, exists := handler.registry.CredentialRef(selection.CredentialID)
 			if !exists || currentRef.GroupID != selection.GroupID ||
@@ -1204,6 +1237,58 @@ func (handler *Handler) executeAttempts(
 		}
 		recorder.startTiming()
 		prepared := prepareRequest(selection)
+		if encryptedRetry != nil || encryptedReplayUsed {
+			// Keep the recovery active for later candidate failover. Rebuild from
+			// that candidate's prepared body so another group's model/parameter
+			// overrides are not inherited from the failed candidate.
+			var recoveryBody []byte
+			if encryptedRetry != nil {
+				recoveryBody = encryptedRetry.body
+				encryptedRetry = nil
+			} else if cleaned, _, ok := codexrecovery.Sanitize(prepared.request.Body); ok {
+				recoveryBody = cleaned
+			}
+			if recoveryBody != nil {
+				prepared = replacePreparedBody(prepared, recoveryBody)
+			}
+		}
+		if encryptedRetry == nil && !encryptedReplayUsed && invalidLineageSession != "" && handler.invalidLineage != nil {
+			lineageKey := codexrecovery.InvalidLineageKey(ref.ID, ref.IdentityGeneration, invalidLineageSession)
+			if rejected := handler.invalidLineage.Lookup(lineageKey, handler.invalidLineageNow()); len(rejected) > 0 {
+				if stripped, removals, ok := codexrecovery.StripEncryptedContentDigests(prepared.request.Body, rejected); ok {
+					prepared = replacePreparedBody(prepared, stripped)
+					utils.LogPlaneBestEffort(
+						handler.logger,
+						logrus.InfoLevel,
+						utils.LogPlaneData,
+						logrus.Fields{
+							"event":         "codex_encrypted_content_lineage_strip",
+							"credential_id": selection.CredentialID,
+							"group_id":      selection.GroupID,
+							"removed":       removals.Total(),
+						},
+						"Removed encrypted continuation state already rejected by this session's upstream",
+					)
+				}
+			}
+			if rejected := handler.invalidLineage.LookupItemIDs(lineageKey, handler.invalidLineageNow()); len(rejected) > 0 {
+				if stripped, removals, ok := codexrecovery.StripHistoryItemIDs(prepared.request.Body, rejected); ok {
+					prepared = replacePreparedBody(prepared, stripped)
+					utils.LogPlaneBestEffort(
+						handler.logger,
+						logrus.InfoLevel,
+						utils.LogPlaneData,
+						logrus.Fields{
+							"event":         "codex_response_item_id_lineage_strip",
+							"credential_id": selection.CredentialID,
+							"group_id":      selection.GroupID,
+							"removed":       removals.Total(),
+						},
+						"Removed history item IDs already rejected by this session's upstream",
+					)
+				}
+			}
+		}
 		if prepared.err != nil {
 			if errors.Is(prepared.err, requestredact.ErrContent) {
 				handler.completeReason(ginContext, recorder, reasonRedactionFailed)
@@ -1343,6 +1428,7 @@ func (handler *Handler) executeAttempts(
 		defer releaseGroup()
 		attemptSequence++
 		forwardAttempts++
+		recoveryRejection = nil
 		if attemptSequence == 1 && (originalMetadata.PreviousResponseID != "" ||
 			(requestAffinity.preferredCredentialID != 0 && selection.CredentialID == requestAffinity.preferredCredentialID)) {
 			kind := requestAffinity.kind
@@ -1395,7 +1481,7 @@ func (handler *Handler) executeAttempts(
 			EmptyResponseRetry: stream && emptyResponseRetryEnabled(
 				selection.Group, originalMetadata, prepared.request.Body,
 			),
-			BufferStream: handler.bufferStreams && (isSynthetic || strings.HasPrefix(strings.ToLower(externalModel), "gemini") || strings.HasPrefix(strings.ToLower(optionalModelValue(selection.UpstreamModelID)), "gemini")),
+			BufferStream: shouldBufferStreamForRequest(handler.bufferStreams, isSynthetic, externalModel, optionalModelValue(selection.UpstreamModelID)),
 			Synthetic:    isSynthetic,
 			OnResponse:   handler.responseBindingObserver(recorder.accessKeyID, selection, ref, prepared.request, recorder.autoSelection()),
 			OnFirstResponse: func() {
@@ -1460,6 +1546,7 @@ func (handler *Handler) executeAttempts(
 			attemptNow,
 			decisionContextForSelection(selection),
 		)
+		applyForkTimeoutDecision(&decision, result, attemptNow, isSynthetic)
 		lastDecision = decision
 		if result.Committed {
 			if recorder != nil {
@@ -1534,6 +1621,120 @@ func (handler *Handler) executeAttempts(
 		if decision.Effect == health.EffectSkipGroup {
 			iterator.SkipGroup(selection.GroupID)
 		}
+		// Recover rejected continuation state before ordinary account failover:
+		// rebuild inline history without upstream-bound IDs/encrypted content
+		// and replay once on the current credential. The replay runs after the
+		// group's error rules and counts toward the retry budget. Later candidate
+		// retries keep using recovered history rather than restoring the rejected state.
+		if signal := encryptedContentRecoverySignal(result); signal != "" &&
+			encryptedContentRecoveryApplies(selectedDialect.Protocol(), result.Committed) {
+			if encryptedReplayUsed {
+				// The one-time cleanup replay still hit the same rejection.
+				// Retrying again is deterministic, so hand back an explicit
+				// terminal instead of a retryable failure.
+				recorder.completeProviderError(
+					result,
+					optionalModelValue(selection.UpstreamModelID),
+					recordedAttempt,
+				)
+				handler.completeReason(ginContext, recorder, reasonEncryptedContentRecoveryExhausted)
+				return
+			}
+			if handler.invalidLineage != nil && invalidLineageSession != "" &&
+				codexrecovery.InvalidEncryptedContentSignal(signal) {
+				digests := codexrecovery.EncryptedContentDigests(prepared.request.Body)
+				if added := handler.invalidLineage.Mark(
+					codexrecovery.InvalidLineageKey(ref.ID, ref.IdentityGeneration, invalidLineageSession),
+					digests,
+					handler.invalidLineageNow(),
+				); added > 0 {
+					utils.LogPlaneBestEffort(
+						handler.logger,
+						logrus.InfoLevel,
+						utils.LogPlaneData,
+						logrus.Fields{
+							"event":         "codex_encrypted_content_lineage_mark",
+							"credential_id": selection.CredentialID,
+							"group_id":      selection.GroupID,
+							"digests":       added,
+						},
+						"Remembered rejected encrypted continuation state for this client session",
+					)
+				}
+			}
+			if handler.invalidLineage != nil && invalidLineageSession != "" &&
+				codexrecovery.InvalidItemIDSignal(signal) {
+				// 条目 ID 报错只说明 ID 不可用，不能据此判定同一请求里的密文失效。
+				itemIDsAdded := handler.invalidLineage.MarkItemIDs(
+					codexrecovery.InvalidLineageKey(ref.ID, ref.IdentityGeneration, invalidLineageSession),
+					codexrecovery.HistoryItemIDs(prepared.request.Body),
+					handler.invalidLineageNow(),
+				)
+				if itemIDsAdded > 0 {
+					utils.LogPlaneBestEffort(
+						handler.logger,
+						logrus.InfoLevel,
+						utils.LogPlaneData,
+						logrus.Fields{
+							"event":         "codex_response_item_id_lineage_mark",
+							"credential_id": selection.CredentialID,
+							"group_id":      selection.GroupID,
+							"item_ids":      itemIDsAdded,
+						},
+						"Remembered rejected history item IDs for this client session",
+					)
+				}
+			}
+			// 错误规则不允许重试、要求跳过分组或重试次数已用完时不重放，沿用普通失败处理；
+			// 拒绝记录已写入，下一次请求发送前仍会清理。
+			if decision.Retry != health.RetryNone && decision.Effect != health.EffectSkipGroup &&
+				forwardAttempts < forwardAttemptLimit {
+				if sanitized, removals, ok := codexrecovery.Sanitize(prepared.request.Body); ok {
+					utils.LogPlaneBestEffort(
+						handler.logger,
+						logrus.InfoLevel,
+						utils.LogPlaneData,
+						logrus.Fields{
+							"event":         "codex_encrypted_content_recovery_retry",
+							"signal":        string(signal),
+							"credential_id": selection.CredentialID,
+							"group_id":      selection.GroupID,
+							"removed":       removals.Total(),
+							"history_ids":   removals.HistoryItemID,
+						},
+						"Replaying the request on the same credential with rejected continuation state removed",
+					)
+					encryptedRetry = &encryptedContentRecoveryRetry{
+						selection: selection,
+						ref:       ref,
+						body:      sanitized,
+					}
+					encryptedReplayUsed = true
+					// Keep the rejection only until another forwarding attempt starts.
+					// It is the fallback if the recovery replay cannot execute.
+					recoveryRejection = &deferredAttempt{
+						result: result, decision: decision,
+						upstreamModel: optionalModelValue(selection.UpstreamModelID),
+						attemptIndex:  recordedAttempt,
+					}
+					recorder.retryIfAnotherForward(recordedAttempt)
+					continue
+				}
+				utils.LogPlaneBestEffort(
+					handler.logger,
+					logrus.WarnLevel,
+					utils.LogPlaneData,
+					logrus.Fields{
+						"event":         "codex_encrypted_content_recovery_skipped",
+						"signal":        string(signal),
+						"credential_id": selection.CredentialID,
+						"group_id":      selection.GroupID,
+						"reason":        "no_removable_encrypted_content",
+					},
+					"Continuation state was rejected but no safely removable state was found",
+				)
+			}
+		}
 		if result.StatusCode >= http.StatusContinue && result.StatusCode < http.StatusOK {
 			recorder.completeTransport(
 				reasonUpstreamProtocol,
@@ -1561,7 +1762,7 @@ func (handler *Handler) executeAttempts(
 			return
 		}
 		if result.ProviderErrorBeforeCommit {
-			if shouldRetrySyntheticProviderError(decision, isSynthetic, result) {
+			if shouldRetrySynthetic(decision, isSynthetic, input.BufferStream, result) {
 				lastProviderError = &deferredAttempt{
 					result:        result,
 					decision:      decision,
@@ -1589,7 +1790,7 @@ func (handler *Handler) executeAttempts(
 			lastResponse = &deferredAttempt{
 				result: result, decision: decision, upstreamModel: optionalModelValue(selection.UpstreamModelID), attemptIndex: recordedAttempt,
 			}
-			if shouldRetrySyntheticResponse(decision, isSynthetic, result) {
+			if shouldRetrySynthetic(decision, isSynthetic, input.BufferStream, result) {
 				recorder.retryIfAnotherForward(recordedAttempt)
 				continue
 			}
@@ -1610,7 +1811,7 @@ func (handler *Handler) executeAttempts(
 			recorder.completeCanceled(ginContext.Request.Context(), 0, recordedAttempt)
 			return
 		}
-		if shouldRetrySyntheticAttempt(decision, isSynthetic, result) {
+		if shouldRetrySynthetic(decision, isSynthetic, input.BufferStream, result) {
 			deferred := &deferredAttempt{
 				result: result, decision: decision, upstreamModel: optionalModelValue(selection.UpstreamModelID), attemptIndex: recordedAttempt,
 			}
@@ -1634,6 +1835,16 @@ func (handler *Handler) executeAttempts(
 		return
 	}
 
+	if recoveryRejection != nil {
+		switch {
+		case recoveryRejection.result.ProviderErrorBeforeCommit:
+			lastProviderError = recoveryRejection
+		case recoveryRejection.result.HasResponse():
+			lastResponse = recoveryRejection
+		default:
+			lastTransport = recoveryRejection
+		}
+	}
 	if lastEmptyResponse != nil {
 		handler.completeEmptyResponse(
 			ginContext,

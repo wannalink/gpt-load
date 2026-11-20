@@ -41,10 +41,10 @@ import (
 )
 
 func TestSystemOutboundProxyProviderUsesEnvironmentAndLatestGlobalSnapshot(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://environment-proxy.example.com:8080")
 	t.Setenv("https_proxy", "")
 	t.Setenv("HTTP_PROXY", "")
 	t.Setenv("http_proxy", "")
-	t.Setenv("HTTPS_PROXY", "http://environment-proxy.example.com:8080")
 
 	manager := state.NewManager()
 	provider := newSystemOutboundProxyProvider(manager)
@@ -105,9 +105,6 @@ func TestBuildContainerInstallsDataPlaneCORSBeforeRouteAuthentication(t *testing
 		sqlDB, dbErr := db.DB()
 		if dbErr == nil {
 			t.Cleanup(func() { _ = sqlDB.Close() })
-		}
-		if migrateErr := storage.AutoMigrate(db); migrateErr != nil {
-			t.Fatalf("AutoMigrate() error = %v", migrateErr)
 		}
 	}); err != nil {
 		t.Fatalf("resolve container dependencies: %v", err)

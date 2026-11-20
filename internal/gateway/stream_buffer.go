@@ -4,9 +4,25 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 
 	"gpt-load/internal/execution"
 )
+
+func streamBufferingEnabledFromEnv() bool {
+	val := os.Getenv("GPT_LOAD_BUFFER_STREAMS")
+	return val != "false" && val != "0"
+}
+
+func shouldBufferStreamForRequest(enabled, isSynthetic bool, externalModel, upstreamModel string) bool {
+	if !enabled {
+		return false
+	}
+	return isSynthetic ||
+		strings.HasPrefix(strings.ToLower(externalModel), "gemini") ||
+		strings.HasPrefix(strings.ToLower(upstreamModel), "gemini")
+}
 
 type streamBuffer struct {
 	enabled bool

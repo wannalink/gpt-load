@@ -216,10 +216,18 @@ func sanitizeNativePassthroughRequest(
 		return bytes.Clone(request.Body), request.Header.Clone(), nil
 	}
 	if spec.ClientProtocol == protocol.GeminiEmbeddings && spec.Operation == execution.OperationEmbeddingsCreate {
+		model := spec.UpstreamModel
+		if spec.ChannelID == string(channel.GoogleVertex) {
+			var ok bool
+			model, ok = channel.NormalizeVertexEmbeddingsModel(model)
+			if !ok {
+				return nil, nil, fmt.Errorf("invalid Vertex Embeddings model")
+			}
+		}
 		request, err := dialect.NewGeminiEmbeddings().SanitizeRequestForAttempt(&dialect.ParsedRequest{
 			Method: spec.Method, Path: spec.Path, RawQuery: spec.RawQuery,
 			Header: spec.Header.Clone(), Body: spec.Body,
-		}, spec.UpstreamModel)
+		}, model)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -664,7 +672,7 @@ func (r *Runtime) executeNativeStream(
 				}
 				if status >= http.StatusOK && status < http.StatusMultipleChoices {
 					if err := firstEventGate.finish(); err != nil {
-						return nativeStreamProtocolFailure(status, headers, requestID, model, usageEvidence)
+						return attemptedStreamFailure(execution.ErrorKindInternal, "invalid upstream SSE stream")
 					}
 				}
 				if aliasRewriter != nil && status >= http.StatusOK && status < http.StatusMultipleChoices {
@@ -725,7 +733,7 @@ func (r *Runtime) executeNativeStream(
 					if err != nil {
 						cancelCall()
 						if !started {
-							return nativeStreamProtocolFailure(status, headers, requestID, model, usageEvidence)
+							return attemptedStreamFailure(execution.ErrorKindInternal, "invalid upstream SSE stream")
 						}
 						return nativeStreamProtocolFailure(status, headers, requestID, model, usageEvidence)
 					}
@@ -897,12 +905,9 @@ func nativeStreamProtocolFailure(
 		UpstreamRequestID: requestID,
 		Usage:             cloneUsage(usageEvidence),
 		Error: &execution.ErrorEvidence{
-			Kind:       execution.ErrorKindProvider,
-			OriginHint: execution.ErrorOriginUpstream,
-			StatusCode: status,
-			Code:       "upstream_protocol_error",
-			Summary:    "invalid upstream SSE stream",
-			RequestID:  requestID,
+			Kind:      execution.ErrorKindInternal,
+			Summary:   "invalid upstream SSE stream",
+			RequestID: requestID,
 		},
 	}
 }

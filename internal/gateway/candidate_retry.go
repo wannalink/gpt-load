@@ -47,7 +47,7 @@ func (handler *Handler) waitCandidateCooldown(
 	}
 	now := handler.now()
 	earliest, hasCandidates := iterator.EarliestCandidateAvailable(now)
-	if !hasCandidates {
+	if !hasCandidates || !earliest.After(now) {
 		return false
 	}
 
@@ -59,7 +59,7 @@ func (handler *Handler) waitCandidateCooldown(
 	}
 
 	remaining := effectiveDeadline.Sub(now)
-	if remaining <= 0 {
+	if remaining <= 0 || earliest.After(effectiveDeadline) {
 		return false
 	}
 
