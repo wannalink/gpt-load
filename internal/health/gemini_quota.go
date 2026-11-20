@@ -18,10 +18,9 @@ const GeminiFreeTierQuotaErrorSubstring = "quota exceeded for metric: generative
 const GeminiHighDemandErrorSubstring = "this model is currently experiencing high demand. spikes in demand are usually temporary. please try again later."
 
 var geminiBackoffSteps = []time.Duration{
-	30 * time.Second,
+	20 * time.Second,
+	40 * time.Second,
 	60 * time.Second,
-	120 * time.Second,
-	290 * time.Second,
 }
 
 type geminiBackoffKey struct {

@@ -253,10 +253,9 @@ type GeminiThrottleRegistry struct {
 }
 
 var geminiModelPauseSteps = []time.Duration{
-	30 * time.Second,
+	20 * time.Second,
+	40 * time.Second,
 	60 * time.Second,
-	120 * time.Second,
-	290 * time.Second,
 }
 
 type geminiModelPauseState struct {
